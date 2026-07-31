@@ -136,6 +136,7 @@ export async function POST(request: NextRequest) {
         location: result.emergencyData.location,
         emergencyType: result.emergencyData.emergencyType ?? "General Emergency",
         isTravelling: result.emergencyData.isTravelling ?? false,
+        referenceId: result.emergencyData.referenceId,
         language,
         conversation,
         conversationSummary: result.conversationContext?.summary,

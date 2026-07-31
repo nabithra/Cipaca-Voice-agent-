@@ -1,6 +1,13 @@
 "use client";
 
+import {
+  ensureAudioContext,
+  MIC_CONSTRAINTS,
+  primeSpeechSynthesisVoices,
+} from "@/lib/mobile-voice";
 import type { Language } from "@/types";
+
+export { MIC_CONSTRAINTS };
 
 export type PipelineStage =
   | "microphone"
@@ -116,14 +123,6 @@ export function isLikelyAssistantEcho(transcript: string, assistantText: string)
   return overlap >= 0.65;
 }
 
-export const MIC_CONSTRAINTS: MediaStreamConstraints = {
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
-  },
-};
-
 export async function speakText(
   text: string,
   language: Language,
@@ -132,9 +131,12 @@ export async function speakText(
 ): Promise<"openai" | "browser" | "skipped"> {
   if (isMuted || !text.trim()) return "skipped";
 
+  await ensureAudioContext();
+  primeSpeechSynthesisVoices();
+
   voiceDebug.setStage("tts", "loading");
-  voiceDebug.log(`Speaking: "${text.slice(0, 60)}..."`);
-  console.log("[CIPACA] Speaking:", text.slice(0, 120));
+  voiceDebug.log("TTS started");
+  console.log("[CIPACA] TTS started:", text.slice(0, 120));
 
   if (!options?.demoMode) {
     try {
@@ -152,6 +154,8 @@ export async function speakText(
           URL.revokeObjectURL(url);
           voiceDebug.setStage("tts", "working");
           voiceDebug.setStage("speaker", "working");
+          voiceDebug.log("TTS ended");
+          console.log("[CIPACA] TTS ended (OpenAI audio)");
           return "openai";
         }
       }
@@ -167,6 +171,8 @@ export async function speakText(
     await speakWithBrowser(text, language);
     voiceDebug.setStage("tts", "working");
     voiceDebug.setStage("speaker", "working");
+    voiceDebug.log("TTS ended");
+    console.log("[CIPACA] TTS ended (browser speechSynthesis)");
     return "browser";
   } catch (err) {
     voiceDebug.error(
@@ -180,10 +186,19 @@ export async function speakText(
 
 function playAudioUrl(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const audio = new Audio(url);
-    audio.onended = () => resolve();
-    audio.onerror = () => reject(new Error("Audio playback failed"));
-    audio.play().catch(reject);
+    void ensureAudioContext().then(() => {
+      const audio = new Audio();
+      audio.src = url;
+      audio.preload = "auto";
+      audio.setAttribute("playsinline", "true");
+      audio.setAttribute("webkit-playsinline", "true");
+      audio.onended = () => {
+        voiceDebug.log("TTS ended");
+        resolve();
+      };
+      audio.onerror = () => reject(new Error("Audio playback failed"));
+      audio.play().catch(reject);
+    });
   });
 }
 
@@ -194,28 +209,48 @@ function speakWithBrowser(text: string, language: Language): Promise<void> {
       return;
     }
 
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = language === "ta" ? "ta-IN" : "en-IN";
-    utterance.rate = 0.95;
-    utterance.pitch = 1;
+    const synth = window.speechSynthesis;
+    synth.cancel();
 
-    utterance.onend = () => {
-      console.log("[CIPACA] Speaking finished (browser TTS)");
-      resolve();
+    const speakNow = () => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = language === "ta" ? "ta-IN" : "en-IN";
+      utterance.rate = 0.95;
+      utterance.pitch = 1;
+
+      const voices = synth.getVoices();
+      const preferred = voices.find((v) =>
+        language === "ta" ? v.lang.startsWith("ta") : v.lang.startsWith("en")
+      );
+      if (preferred) utterance.voice = preferred;
+
+      utterance.onstart = () => {
+        voiceDebug.log("TTS started");
+        console.log("[CIPACA] TTS started (browser)");
+      };
+      utterance.onend = () => {
+        voiceDebug.log("TTS ended");
+        console.log("[CIPACA] TTS ended (browser)");
+        resolve();
+      };
+      utterance.onerror = (e) =>
+        reject(new Error(e.error ?? "speechSynthesis error"));
+
+      // iOS Safari requires a short delay after cancel before speak().
+      if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+        setTimeout(() => synth.speak(utterance), 50);
+      } else {
+        synth.speak(utterance);
+      }
     };
-    utterance.onerror = (e) => reject(new Error(e.error ?? "speechSynthesis error"));
 
-    // Voices may load async
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find((v) =>
-      language === "ta"
-        ? v.lang.startsWith("ta")
-        : v.lang.startsWith("en")
-    );
-    if (preferred) utterance.voice = preferred;
-
-    window.speechSynthesis.speak(utterance);
+    const voices = synth.getVoices();
+    if (voices.length === 0) {
+      synth.addEventListener("voiceschanged", speakNow, { once: true });
+      synth.getVoices();
+    } else {
+      speakNow();
+    }
   });
 }
 

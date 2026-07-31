@@ -104,6 +104,16 @@ export function VoiceInterface() {
         stage={emergencyStage}
         ticketId={emergencyTicketId}
         greAssigned={greAssigned}
+        isDemoMode={isDemoMode}
+        isComplete={!!emergencyTicketId && emergencyStage === "connecting_human"}
+        handoffMessage={
+          emergencyTicketId
+            ? (messages
+                .filter((m) => m.role === "assistant")
+                .reverse()
+                .find((m) => m.content.includes("Emergency ticket"))?.content ?? null)
+            : null
+        }
       />
 
       <EscalationOverlay

@@ -4,8 +4,27 @@ import { useCallback, useEffect, useRef } from "react";
 import { useVoiceStore, saveLeadToLocalStorage } from "@/lib/store";
 import { useLeadStore } from "@/lib/store";
 import { useToolHandler } from "@/hooks/use-tool-handler";
-import { speakText, fetchWithRetry, voiceDebug, isLikelyAssistantEcho, MIC_CONSTRAINTS } from "@/lib/voice-client";
+import { speakText, fetchWithRetry, voiceDebug, isLikelyAssistantEcho } from "@/lib/voice-client";
+import {
+  configureRecognitionForMobile,
+  ensureAudioContext,
+  getSpeechRecognitionConstructor,
+  logVoiceEvent,
+  permissionDeniedMessage,
+  primeSpeechSynthesisVoices,
+  recognitionFailedMessage,
+  recognitionUnavailableMessage,
+  releaseMicrophoneStream,
+  requestMicrophoneAccess,
+  setMicrophoneEnabled,
+  SILENCE_MS,
+  RECOGNITION_RESTART_DELAY_MS,
+} from "@/lib/mobile-voice";
 import { getLocalGreeting } from "@/lib/local-assistant";
+import {
+  emergencyStageFromContext,
+  playEmergencyTone,
+} from "@/lib/emergency-workflow";
 import type { ConversationContext, ConversationMessage, Lead } from "@/types";
 
 interface RealtimeEvent {
@@ -163,7 +182,8 @@ export function useRealtimeVoice() {
       };
 
       voiceDebug.setStage("microphone", "loading");
-      const ms = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+      await ensureAudioContext();
+      const ms = await requestMicrophoneAccess({ retries: 1 });
       voiceDebug.setStage("microphone", "working");
       pc.addTrack(ms.getTracks()[0]);
 
@@ -198,7 +218,11 @@ export function useRealtimeVoice() {
       await pc.setRemoteDescription({ type: "answer", sdp: await sdpResponse.text() });
       return true;
     } catch (err) {
-      voiceDebug.error(`Realtime failed: ${err instanceof Error ? err.message : "unknown"}`, "openaiRequest");
+      const msg =
+        err instanceof Error && err.message === "PERMISSION_DENIED"
+          ? permissionDeniedMessage()
+          : `Realtime failed: ${err instanceof Error ? err.message : "unknown"}`;
+      voiceDebug.error(msg, "openaiRequest");
       cleanup();
       return false;
     }
@@ -224,10 +248,16 @@ export function useRealtimeVoice() {
 
 export function useFallbackVoice() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
   const isSpeakingRef = useRef(false);
   const isProcessingRef = useRef(false);
   const isListeningRef = useRef(false);
+  const isStartingRecognitionRef = useRef(false);
   const lastSpokenRef = useRef("");
+  const sessionTranscriptRef = useRef("");
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recognitionRetryRef = useRef(false);
+  const continuousModeRef = useRef(true);
   const { handleToolCall } = useToolHandler();
   const { addLead } = useLeadStore();
 
@@ -245,51 +275,121 @@ export function useFallbackVoice() {
     setHasActiveSession,
     setDemoMode,
     setEmergency,
+    setEmergencyStage,
+    setGreAssigned,
   } = useVoiceStore();
 
-  const stopListening = useCallback(() => {
-    if (!recognitionRef.current) return;
-    try {
-      recognitionRef.current.stop();
-    } catch {
-      // already stopped
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
     }
-    isListeningRef.current = false;
-    voiceDebug.setStage("speechRecognition", "idle");
-    voiceDebug.log("Listening Stopped");
-    console.log("[CIPACA] Listening Stopped");
   }, []);
+
+  const stopListening = useCallback(
+    (reason = "manual") => {
+      clearSilenceTimer();
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch {
+          try {
+            recognitionRef.current.stop();
+          } catch {
+            // already stopped
+          }
+        }
+      }
+      isListeningRef.current = false;
+      isStartingRecognitionRef.current = false;
+      voiceDebug.setStage("speechRecognition", "idle");
+      logVoiceEvent("Recognition ended", reason);
+    },
+    [clearSilenceTimer]
+  );
 
   const startListening = useCallback(() => {
     if (!recognitionRef.current) return;
     if (isSpeakingRef.current || isProcessingRef.current) return;
+    if (isListeningRef.current || isStartingRecognitionRef.current) return;
+    if (!continuousModeRef.current) return;
     if (useVoiceStore.getState().conversationContext.state === "SESSION_CLOSED") return;
 
-    try {
-      recognitionRef.current.start();
-      isListeningRef.current = true;
-      setStatus("listening");
-      voiceDebug.setStage("speechRecognition", "working");
-      voiceDebug.log("Listening Started");
-      console.log("[CIPACA] Listening Started");
-    } catch {
-      // recognition may already be running; treat as listening
-      isListeningRef.current = true;
-      setStatus("listening");
-    }
+    isStartingRecognitionRef.current = true;
+    sessionTranscriptRef.current = "";
+
+    const tryStart = () => {
+      try {
+        recognitionRef.current!.start();
+        isListeningRef.current = true;
+        setStatus("listening");
+        voiceDebug.setStage("speechRecognition", "working");
+        logVoiceEvent("Recognition started");
+      } catch (err) {
+        const name = (err as DOMException)?.name ?? "";
+        if (name === "InvalidStateError") {
+          try {
+            recognitionRef.current!.abort();
+          } catch {
+            /* ignore */
+          }
+          window.setTimeout(() => {
+            try {
+              recognitionRef.current!.start();
+              isListeningRef.current = true;
+              setStatus("listening");
+              voiceDebug.setStage("speechRecognition", "working");
+              logVoiceEvent("Recognition started", "after abort");
+            } catch {
+              isListeningRef.current = false;
+            } finally {
+              isStartingRecognitionRef.current = false;
+            }
+          }, RECOGNITION_RESTART_DELAY_MS);
+          return;
+        }
+        isListeningRef.current = false;
+        logVoiceEvent("Recognition start failed", name || String(err));
+      }
+      isStartingRecognitionRef.current = false;
+    };
+
+    tryStart();
   }, [setStatus]);
+
+  const flushTranscript = useCallback(
+    (source: string) => {
+      clearSilenceTimer();
+      const text = sessionTranscriptRef.current.trim();
+      sessionTranscriptRef.current = "";
+      stopListening(source);
+      if (text) {
+        logVoiceEvent("Transcript", text);
+        void processUserInputRef.current?.(text);
+      }
+    },
+    [clearSilenceTimer, stopListening]
+  );
+
+  const scheduleSilenceFlush = useCallback(() => {
+    clearSilenceTimer();
+    silenceTimerRef.current = setTimeout(() => {
+      flushTranscript("silence");
+    }, SILENCE_MS);
+  }, [clearSilenceTimer, flushTranscript]);
+
+  const processUserInputRef = useRef<(text: string) => Promise<void>>(async () => {});
 
   const speak = useCallback(
     async (text: string) => {
       if (isMuted || !text.trim()) return;
 
       isSpeakingRef.current = true;
-      stopListening();
+      stopListening("tts-start");
+      setMicrophoneEnabled(micStreamRef.current, false);
       lastSpokenRef.current = text;
       setStatus("speaking");
       setUserTranscript("");
-      voiceDebug.log(`Speaking: "${text.slice(0, 60)}..."`);
-      console.log("[CIPACA] Speaking:", text.slice(0, 120));
 
       try {
         const demoMode = useVoiceStore.getState().isDemoMode;
@@ -297,9 +397,11 @@ export function useFallbackVoice() {
       } finally {
         isSpeakingRef.current = false;
         voiceDebug.setStage("speaker", "idle");
-        console.log("[CIPACA] Speaking finished");
-        if (!isProcessingRef.current) {
-          startListening();
+        if (!isProcessingRef.current && !isMuted) {
+          setMicrophoneEnabled(micStreamRef.current, true);
+        }
+        if (!isProcessingRef.current && continuousModeRef.current) {
+          window.setTimeout(() => startListening(), RECOGNITION_RESTART_DELAY_MS);
         }
       }
     },
@@ -328,15 +430,18 @@ export function useFallbackVoice() {
         (lastAssistant && isLikelyAssistantEcho(text, lastAssistant.content))
       ) {
         voiceDebug.log(`Ignored assistant echo: "${text.slice(0, 60)}"`);
-        console.log("[CIPACA] Ignored echo (assistant audio):", text);
+        logVoiceEvent("Transcript ignored", "assistant echo");
+        if (continuousModeRef.current) {
+          window.setTimeout(() => startListening(), RECOGNITION_RESTART_DELAY_MS);
+        }
         return;
       }
 
-      stopListening();
+      stopListening("processing");
+      setMicrophoneEnabled(micStreamRef.current, false);
       isProcessingRef.current = true;
 
-      console.log("[CIPACA] Recognized Transcript:", text);
-      voiceDebug.log(`Recognized Transcript: "${text}"`);
+      logVoiceEvent("Transcript", text);
 
       setUserTranscript(text);
       voiceDebug.setStage("transcript", "working");
@@ -387,19 +492,41 @@ export function useFallbackVoice() {
         voiceDebug.log(`AI Response: "${responseText.slice(0, 80)}..."`);
 
         if (result.data.conversationContext) {
-          setConversationContext(result.data.conversationContext);
+          const newCtx = result.data.conversationContext;
+          setConversationContext(newCtx);
+
+          if (newCtx.currentWorkflow === "emergency") {
+            const store = useVoiceStore.getState();
+            if (!store.isEmergency) {
+              setEmergency(true);
+              playEmergencyTone();
+            }
+            setEmergencyStage(emergencyStageFromContext(newCtx));
+          }
+
+          if (
+            newCtx.workflowStatus === "completed" &&
+            newCtx.currentWorkflow === "emergency"
+          ) {
+            setEmergencyStage("connecting_human");
+          }
         }
 
         if (result.data.savedLead) {
           addLead(result.data.savedLead);
           saveLeadToLocalStorage(result.data.savedLead);
           if (result.data.savedLead.category === "Emergency") {
-            setEmergency(
-              true,
+            const ticketId =
               result.data.savedLead.ticketId ??
-                result.data.savedLead.referenceId ??
-                undefined
-            );
+              result.data.savedLead.referenceId ??
+              result.data.conversationContext?.referenceId;
+            setEmergency(true, ticketId);
+            setEmergencyStage("connecting_human");
+            if (useVoiceStore.getState().isDemoMode) {
+              setGreAssigned("Demo GRE Executive");
+            } else if (result.data.savedLead.greAssigned) {
+              setGreAssigned(result.data.savedLead.greAssigned);
+            }
           }
         }
 
@@ -429,7 +556,6 @@ export function useFallbackVoice() {
       setUserTranscript("");
       setAiTranscript("");
       isProcessingRef.current = false;
-      startListening();
     },
     [
       addLead,
@@ -438,14 +564,19 @@ export function useFallbackVoice() {
       setAiTranscript,
       setConversationContext,
       setEmergency,
+      setEmergencyStage,
+      setGreAssigned,
       setError,
       setStatus,
       setUserTranscript,
       speak,
-      startListening,
       stopListening,
     ]
   );
+
+  useEffect(() => {
+    processUserInputRef.current = processUserInput;
+  }, [processUserInput]);
 
   const connect = useCallback(async (): Promise<boolean> => {
     try {
@@ -474,64 +605,103 @@ export function useFallbackVoice() {
       }
 
       voiceDebug.setStage("microphone", "loading");
-      const SpeechRecognitionAPI =
-        window.SpeechRecognition || window.webkitSpeechRecognition;
+      await ensureAudioContext();
+      primeSpeechSynthesisVoices();
 
-      if (!SpeechRecognitionAPI) {
-        voiceDebug.error("SpeechRecognition not supported", "speechRecognition");
-        throw new Error("Speech recognition not supported in this browser. Try Chrome or Edge.");
+      try {
+        micStreamRef.current = await requestMicrophoneAccess({ retries: 1 });
+      } catch (err) {
+        if (err instanceof Error && err.message === "PERMISSION_DENIED") {
+          setError(permissionDeniedMessage());
+        } else {
+          setError("Could not access microphone. Please check permissions and try again.");
+        }
+        setStatus("error");
+        return false;
       }
 
+      const SpeechRecognitionAPI = getSpeechRecognitionConstructor();
+      if (!SpeechRecognitionAPI) {
+        voiceDebug.error("SpeechRecognition not supported", "speechRecognition");
+        throw new Error(recognitionUnavailableMessage());
+      }
+
+      continuousModeRef.current = true;
+      recognitionRetryRef.current = false;
+
       const recognition = new SpeechRecognitionAPI();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = language === "ta" ? "ta-IN" : "en-IN";
+      configureRecognitionForMobile(recognition, language);
+
+      recognition.onstart = () => {
+        isListeningRef.current = true;
+        logVoiceEvent("Recognition started", "onstart");
+      };
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
-        // Never process mic input while assistant is speaking or pipeline is busy
-        if (isSpeakingRef.current || isProcessingRef.current) {
-          return;
+        if (isSpeakingRef.current || isProcessingRef.current) return;
+
+        let full = "";
+        for (let i = 0; i < event.results.length; i++) {
+          full += event.results[i][0].transcript;
         }
+        const trimmed = full.trim();
+        if (!trimmed) return;
 
-        let interim = "";
-        let final = "";
+        sessionTranscriptRef.current = trimmed;
+        setUserTranscript(trimmed);
+        voiceDebug.setStage("speechRecognition", "working");
+        scheduleSilenceFlush();
+      };
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) final += transcript;
-          else interim += transcript;
-        }
-
-        if (interim) {
-          setUserTranscript(interim);
-          voiceDebug.setStage("speechRecognition", "working");
-        }
-
-        if (final.trim()) {
-          processUserInput(final.trim());
+      recognition.onspeechend = () => {
+        if (!isSpeakingRef.current && !isProcessingRef.current && sessionTranscriptRef.current) {
+          scheduleSilenceFlush();
         }
       };
 
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        isListeningRef.current = false;
+        isStartingRecognitionRef.current = false;
+        logVoiceEvent("Recognition error", event.error);
+
         if (event.error === "not-allowed") {
           voiceDebug.error("Microphone permission denied", "microphone");
-          setError("Microphone permission denied. Please allow microphone access and reload.");
-        } else if (event.error !== "no-speech" && event.error !== "aborted") {
-          voiceDebug.log(`SpeechRecognition: ${event.error}`);
+          setError(permissionDeniedMessage());
+          continuousModeRef.current = false;
+          return;
         }
+        if (event.error === "aborted") return;
+
+        if (event.error === "no-speech") {
+          if (
+            continuousModeRef.current &&
+            !isSpeakingRef.current &&
+            !isProcessingRef.current
+          ) {
+            window.setTimeout(() => startListening(), RECOGNITION_RESTART_DELAY_MS);
+          }
+          return;
+        }
+
+        if (!recognitionRetryRef.current) {
+          recognitionRetryRef.current = true;
+          logVoiceEvent("Recognition retry", event.error);
+          window.setTimeout(() => {
+            recognitionRetryRef.current = false;
+            if (continuousModeRef.current && !isSpeakingRef.current && !isProcessingRef.current) {
+              startListening();
+            }
+          }, 800);
+          return;
+        }
+
+        setError(recognitionFailedMessage(event.error));
       };
 
       recognition.onend = () => {
         isListeningRef.current = false;
-        // Only auto-restart when idle — never during TTS or AI processing
-        if (
-          recognitionRef.current &&
-          !isSpeakingRef.current &&
-          !isProcessingRef.current &&
-          useVoiceStore.getState().conversationContext.state !== "SESSION_CLOSED"
-        ) {
-          window.setTimeout(() => startListening(), 250);
-        }
+        isStartingRecognitionRef.current = false;
+        logVoiceEvent("Recognition ended", "onend");
       };
 
       recognitionRef.current = recognition;
@@ -566,7 +736,12 @@ export function useFallbackVoice() {
 
       return true;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Connection failed";
+      const msg =
+        err instanceof Error && err.message === "PERMISSION_DENIED"
+          ? permissionDeniedMessage()
+          : err instanceof Error
+            ? err.message
+            : "Connection failed";
       voiceDebug.error(msg, "speechRecognition");
       setError(msg);
       setStatus("error");
@@ -576,6 +751,7 @@ export function useFallbackVoice() {
     addMessage,
     language,
     processUserInput,
+    scheduleSilenceFlush,
     setConversationContext,
     setDemoMode,
     setError,
@@ -587,7 +763,11 @@ export function useFallbackVoice() {
   ]);
 
   const disconnect = useCallback(() => {
-    stopListening();
+    continuousModeRef.current = false;
+    clearSilenceTimer();
+    stopListening("disconnect");
+    releaseMicrophoneStream(micStreamRef.current);
+    micStreamRef.current = null;
     if (recognitionRef.current) {
       recognitionRef.current = null;
     }
@@ -595,12 +775,22 @@ export function useFallbackVoice() {
     isSpeakingRef.current = false;
     isProcessingRef.current = false;
     isListeningRef.current = false;
+    isStartingRecognitionRef.current = false;
+    sessionTranscriptRef.current = "";
+    recognitionRetryRef.current = false;
     lastSpokenRef.current = "";
     setStatus("disconnected");
     voiceDebug.reset();
-  }, [setStatus, stopListening]);
+  }, [clearSilenceTimer, setStatus, stopListening]);
 
   useEffect(() => () => disconnect(), [disconnect]);
+
+  useEffect(() => {
+    setMicrophoneEnabled(
+      micStreamRef.current,
+      !isMuted && !isSpeakingRef.current && !isProcessingRef.current
+    );
+  }, [isMuted]);
 
   return { connect, disconnect };
 }

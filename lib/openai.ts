@@ -188,7 +188,7 @@ export async function getChatResponse(
   const ctx = conversationContext ?? createInitialContext(language);
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const engineResult = lastUser
-    ? processConversationTurn(lastUser.content, ctx)
+    ? processConversationTurn(lastUser.content, ctx, { isDemoMode: isDemoMode() })
     : { reply: "How may I help you?", context: ctx };
 
   const useEngineReply =

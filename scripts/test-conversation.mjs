@@ -84,3 +84,38 @@ if (ctx.currentWorkflow !== "appointment" || !ctx.name) {
   process.exit(1);
 }
 console.log("\n✓ Tamil appointment workflow passed");
+
+// Emergency workflow test
+ctx = null;
+msgs.length = 0;
+
+await send("There has been an accident.");
+if (ctx.currentWorkflow !== "emergency" || ctx.currentStep !== "ask_name") {
+  console.error("Emergency workflow did not start", ctx);
+  process.exit(1);
+}
+
+const emergencySteps = [
+  "Ravi Kumar",
+  "9876543210",
+  "NH 48 near Tiruvannamalai",
+  "Road accident with head injury",
+  "Yes",
+];
+
+for (const step of emergencySteps) {
+  await send(step);
+}
+
+if (ctx.workflowStatus !== "completed" || !ctx.referenceId?.startsWith("EMG-")) {
+  console.error("\nExpected completed emergency with EMG ticket, got", ctx);
+  process.exit(1);
+}
+
+const lastReply = msgs[msgs.length - 1]?.content ?? "";
+if (!/Emergency ticket EMG-/.test(lastReply) || !/emergency team has been notified/i.test(lastReply)) {
+  console.error("\nMissing handoff message:", lastReply);
+  process.exit(1);
+}
+
+console.log("\n✓ Full emergency workflow passed with ticket", ctx.referenceId);

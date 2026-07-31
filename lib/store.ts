@@ -115,11 +115,13 @@ export const useVoiceStore = create<VoiceStore>()(
       addMessage: (message) =>
         set((state) => ({ messages: [...state.messages, message] })),
       setEmergency: (isEmergency, ticketId) =>
-        set({
+        set((state) => ({
           isEmergency,
-          emergencyTicketId: ticketId ?? null,
-          emergencyStage: isEmergency ? "detected" : null,
-        }),
+          emergencyTicketId: ticketId ?? state.emergencyTicketId,
+          emergencyStage: isEmergency
+            ? state.emergencyStage ?? "detected"
+            : null,
+        })),
       setEmergencyStage: (emergencyStage) => set({ emergencyStage }),
       setArrivalStage: (arrivalStage) => set({ arrivalStage }),
       setEscalating: (isEscalating, escalationId) =>

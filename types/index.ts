@@ -153,6 +153,7 @@ export interface EmergencyInput {
   language?: Language;
   conversation?: ConversationMessage[];
   conversationSummary?: string;
+  referenceId?: string;
 }
 
 export interface AppointmentInput {
@@ -317,6 +318,7 @@ export type WorkflowStep =
   | "ask_name"
   | "ask_phone"
   | "ask_location"
+  | "ask_emergency_type"
   | "ask_travelling"
   | "ask_department"
   | "ask_doctor"
