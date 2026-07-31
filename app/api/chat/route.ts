@@ -135,7 +135,7 @@ export async function POST(request: NextRequest) {
         phone: result.emergencyData.phone,
         location: result.emergencyData.location,
         emergencyType: result.emergencyData.emergencyType ?? "General Emergency",
-        isTravelling: false,
+        isTravelling: result.emergencyData.isTravelling ?? false,
         language,
         conversation,
         conversationSummary: result.conversationContext?.summary,

@@ -4,8 +4,8 @@ import { OPENAI_CHAT_TOOLS } from "@/lib/tools";
 import { searchKnowledgeBase } from "@/lib/knowledge-base";
 import { isOpenAIConfigured, isDemoMode } from "@/lib/openai-config";
 import { getOpenAIClient } from "@/lib/openai-client";
-import { getLocalAssistantReply, getLocalGreeting } from "@/lib/local-assistant";
-import { buildContextPrompt, processConversationTurn } from "@/lib/conversation-engine";
+import { getLocalGreeting } from "@/lib/local-assistant";
+import { buildContextPrompt, processConversationTurn, isWorkflowActive } from "@/lib/conversation-engine";
 import type { ConversationContext, Language } from "@/types";
 import { createInitialContext } from "@/types";
 import {
@@ -46,6 +46,7 @@ export interface ChatResult {
     phone: string;
     location: string;
     emergencyType?: string;
+    isTravelling?: boolean;
     referenceId?: string;
   };
 }
@@ -167,21 +168,7 @@ export async function getChatCompletionWithTools(
     }
 
     const reply = choice.content?.trim() || "I'm here to help. How can I assist you?";
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const engineResult = lastUser
-      ? processConversationTurn(lastUser.content, ctx)
-      : { reply, context: ctx };
-    return {
-      reply,
-      toolCalls: allToolCalls,
-      source: "openai",
-      model,
-      conversationContext: engineResult.context,
-      shouldSaveAppointment: engineResult.shouldSaveAppointment,
-      shouldSaveEmergency: engineResult.shouldSaveEmergency,
-      appointmentData: engineResult.appointmentData,
-      emergencyData: engineResult.emergencyData,
-    };
+    return { reply, toolCalls: allToolCalls, source: "openai", model };
   }
 
   return {
@@ -199,39 +186,55 @@ export async function getChatResponse(
   conversationContext?: ConversationContext
 ): Promise<ChatResult> {
   const ctx = conversationContext ?? createInitialContext(language);
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const engineResult = lastUser
+    ? processConversationTurn(lastUser.content, ctx)
+    : { reply: "How may I help you?", context: ctx };
 
-  if (!isOpenAIConfigured()) {
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const local = getLocalAssistantReply(lastUser?.content ?? "", messages, language, ctx);
+  const useEngineReply =
+    !isOpenAIConfigured() ||
+    isWorkflowActive(ctx) ||
+    isWorkflowActive(engineResult.context) ||
+    engineResult.context.workflowStatus === "completed" ||
+    engineResult.context.awaitingAnythingElse ||
+    engineResult.context.state === "SESSION_CLOSED";
+
+  if (useEngineReply) {
     return {
-      reply: local.reply,
+      reply: engineResult.reply,
       toolCalls: [],
       source: "local",
       model: "local-assistant",
-      conversationContext: local.context,
-      shouldSaveAppointment: local.shouldSaveAppointment,
-      shouldSaveEmergency: local.shouldSaveEmergency,
-      appointmentData: local.appointmentData,
-      emergencyData: local.emergencyData,
+      conversationContext: engineResult.context,
+      shouldSaveAppointment: engineResult.shouldSaveAppointment,
+      shouldSaveEmergency: engineResult.shouldSaveEmergency,
+      appointmentData: engineResult.appointmentData,
+      emergencyData: engineResult.emergencyData,
     };
   }
 
   try {
-    return await getChatCompletionWithTools(messages, language, ctx);
+    const openaiResult = await getChatCompletionWithTools(messages, language, ctx);
+    return {
+      ...openaiResult,
+      conversationContext: engineResult.context,
+      shouldSaveAppointment: engineResult.shouldSaveAppointment,
+      shouldSaveEmergency: engineResult.shouldSaveEmergency,
+      appointmentData: engineResult.appointmentData,
+      emergencyData: engineResult.emergencyData,
+    };
   } catch (err) {
     console.error("[OpenAI Chat Error]", err);
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const local = getLocalAssistantReply(lastUser?.content ?? "", messages, language, ctx);
     return {
-      reply: local.reply,
+      reply: engineResult.reply,
       toolCalls: [],
       source: "local",
       model: "local-assistant",
-      conversationContext: local.context,
-      shouldSaveAppointment: local.shouldSaveAppointment,
-      shouldSaveEmergency: local.shouldSaveEmergency,
-      appointmentData: local.appointmentData,
-      emergencyData: local.emergencyData,
+      conversationContext: engineResult.context,
+      shouldSaveAppointment: engineResult.shouldSaveAppointment,
+      shouldSaveEmergency: engineResult.shouldSaveEmergency,
+      appointmentData: engineResult.appointmentData,
+      emergencyData: engineResult.emergencyData,
     };
   }
 }

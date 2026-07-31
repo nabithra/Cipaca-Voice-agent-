@@ -2,6 +2,8 @@ import type {
   ConversationContext,
   ConversationIntent,
   Language,
+  WorkflowStep,
+  WorkflowType,
 } from "@/types";
 import { createInitialContext } from "@/types";
 
@@ -27,8 +29,19 @@ export interface EngineResult {
     phone: string;
     location: string;
     emergencyType?: string;
+    isTravelling?: boolean;
     referenceId?: string;
   };
+}
+
+export interface WorkflowDebugInfo {
+  workflow: WorkflowType;
+  workflowStatus: ConversationContext["workflowStatus"];
+  currentStep: WorkflowStep;
+  nextQuestion: string;
+  collected: Record<string, string | boolean | undefined>;
+  missing: string[];
+  sessionState: ConversationContext["state"];
 }
 
 const GOODBYE_PATTERNS =
@@ -38,7 +51,7 @@ const ANYTHING_ELSE_NO =
   /^(no|nothing|nope|that'?s all|that is all|no thanks|i'?m good|all good|none)[\s!.]*$/i;
 
 const APPOINTMENT_PATTERNS =
-  /appointment|book(?:ing)?|consultation|doctor|need doctor|want doctor|scan|mri|ct|x-?ray|lab|schedule|visit|want an appointment|i want an appointment/i;
+  /appointment|book(?:ing)?|consultation|need doctor|want doctor|want an appointment|i want an appointment|need an appointment/i;
 
 const EMERGENCY_PATTERNS =
   /emergency|accident|ambulance|unconscious|critical|stroke|chest pain|severe|urgent|help fast|trauma/i;
@@ -47,7 +60,10 @@ const ESCALATION_PATTERNS =
   /human|operator|executive|person|agent|speak to someone|real person/i;
 
 const FAQ_PATTERNS =
-  /visiting hours|hours|billing|insurance|parking|location|address|department|service|faq|information|help with|hospital services|scan booking/i;
+  /visiting hours|hours|billing|insurance|parking|address|faq|information|hospital services/i;
+
+const TRAVELLING_YES = /^(yes|yeah|yep|y|traveling|travelling|on the way|coming)[\s!.]*$/i;
+const TRAVELLING_NO = /^(no|nope|n|not|already here|at hospital)[\s!.]*$/i;
 
 function t(en: string, ta: string, lang: Language): string {
   return lang === "ta" ? ta : en;
@@ -69,86 +85,147 @@ function declinesMoreHelp(text: string): boolean {
   return ANYTHING_ELSE_NO.test(text.trim()) || isGoodbye(text);
 }
 
-function wantsTopicChange(text: string, current: ConversationIntent): boolean {
-  const detected = detectIntent(text);
-  if (!detected || !current) return false;
-  return detected !== current && detected !== "general";
-}
-
-function nextCollectField(ctx: ConversationContext): keyof ConversationContext | null {
-  if (!ctx.name) return "name";
-  if (!ctx.phone) return "phone";
-  if (ctx.intent === "emergency") {
-    if (!ctx.location) return "location";
-    return null;
-  }
-  if (!ctx.department) return "department";
-  if (ctx.intent === "appointment" && !ctx.doctor) return "doctor";
-  if (!ctx.preferredDate) return "preferredDate";
-  if (!ctx.preferredTime) return "preferredTime";
-  return null;
-}
-
-function stateForField(field: keyof ConversationContext): ConversationContext["state"] {
-  const map: Partial<Record<keyof ConversationContext, ConversationContext["state"]>> = {
-    name: "COLLECTING_NAME",
-    phone: "COLLECTING_PHONE",
-    location: "COLLECTING_LOCATION",
-    department: "COLLECTING_DEPARTMENT",
-    doctor: "COLLECTING_DOCTOR",
-    preferredDate: "COLLECTING_DATE",
-    preferredTime: "COLLECTING_TIME",
+function stateForStep(step: WorkflowStep): ConversationContext["state"] {
+  const map: Partial<Record<WorkflowStep, ConversationContext["state"]>> = {
+    ask_name: "COLLECTING_NAME",
+    ask_phone: "COLLECTING_PHONE",
+    ask_location: "COLLECTING_LOCATION",
+    ask_department: "COLLECTING_DEPARTMENT",
+    ask_doctor: "COLLECTING_DOCTOR",
+    ask_date: "COLLECTING_DATE",
+    ask_time: "COLLECTING_TIME",
+    anything_else: "COMPLETED",
+    closed: "SESSION_CLOSED",
   };
-  return map[field] ?? "CLASSIFICATION";
+  return map[step] ?? "CLASSIFICATION";
 }
 
-function questionForField(
-  field: keyof ConversationContext,
-  ctx: ConversationContext
-): string {
+function questionForStep(step: WorkflowStep, ctx: ConversationContext): string {
   const lang = ctx.language;
-  switch (field) {
-    case "name":
-      return t("May I know your name, please?", "உங்கள் பெயர் என்ன?", lang);
-    case "phone":
+  switch (step) {
+    case "ask_name":
+      return t("What is your name?", "உங்கள் பெயர் என்ன?", lang);
+    case "ask_phone":
       return t(
         ctx.name
-          ? `Thank you, ${ctx.name}. Could you share your mobile number?`
-          : "Could you share your mobile number?",
-        "உங்கள் mobile எண் என்ன?",
+          ? `Thank you, ${ctx.name}. What is your mobile number?`
+          : "What is your mobile number?",
+        ctx.name
+          ? `நன்றி ${ctx.name}. உங்கள் mobile எண் என்ன?`
+          : "உங்கள் mobile எண் என்ன?",
         lang
       );
-    case "location":
+    case "ask_location":
       return t("What is your location or address?", "உங்கள் இருப்பிடம் எங்கே?", lang);
-    case "department":
+    case "ask_travelling":
+      return t(
+        "Are you currently travelling to the hospital?",
+        "நீங்கள் hospital-க்கு வந்து கொண்டிருக்கிறீர்களா?",
+        lang
+      );
+    case "ask_department":
       return t("Which department would you like to visit?", "எந்த department?", lang);
-    case "doctor":
-      return t(
-        "Do you have a preferred doctor, or shall I note general consultation?",
-        "எந்த doctor-ஐ prefer செய்கிறீர்கள்?",
-        lang
-      );
-    case "preferredDate":
-      return t(
-        "What is your preferred date for the appointment?",
-        "விருப்பமான தேதி என்ன?",
-        lang
-      );
-    case "preferredTime":
-      return t("And what time would work best for you?", "விருப்பமான நேரம் என்ன?", lang);
+    case "ask_doctor":
+      return t("Do you have a preferred doctor?", "விருப்பமான doctor யார்?", lang);
+    case "ask_date":
+      return t("What is your preferred date?", "விருப்பமான தேதி என்ன?", lang);
+    case "ask_time":
+      return t("What is your preferred time?", "விருப்பமான நேரம் என்ன?", lang);
     default:
       return t("How may I help you?", "நான் எப்படி உதவ முடியும்?", lang);
   }
 }
 
-function assignField(ctx: ConversationContext, text: string): ConversationContext {
-  const field = nextCollectField(ctx);
-  if (!field) return ctx;
+function appointmentSteps(): WorkflowStep[] {
+  return ["ask_name", "ask_phone", "ask_department", "ask_doctor", "ask_date", "ask_time"];
+}
+
+function emergencySteps(): WorkflowStep[] {
+  return ["ask_name", "ask_phone", "ask_location", "ask_travelling"];
+}
+
+function getNextStep(workflow: WorkflowType, current: WorkflowStep): WorkflowStep | null {
+  if (!workflow) return null;
+  const steps = workflow === "appointment" ? appointmentSteps() : emergencySteps();
+  const idx = steps.indexOf(current);
+  if (idx === -1) return steps[0] ?? null;
+  return steps[idx + 1] ?? null;
+}
+
+function storeStepAnswer(ctx: ConversationContext, text: string): ConversationContext {
   const trimmed = text.trim();
-  if (field === "doctor" && /general|any|no|don't know|not sure/i.test(trimmed)) {
-    return { ...ctx, doctor: "General Consultation" };
+  switch (ctx.currentStep) {
+    case "ask_name":
+      return { ...ctx, name: trimmed };
+    case "ask_phone":
+      return { ...ctx, phone: trimmed };
+    case "ask_location":
+      return { ...ctx, location: trimmed };
+    case "ask_travelling":
+      return {
+        ...ctx,
+        isTravelling: TRAVELLING_YES.test(trimmed)
+          ? true
+          : TRAVELLING_NO.test(trimmed)
+            ? false
+            : /yes|travel|way|coming/i.test(trimmed),
+      };
+    case "ask_department":
+      return { ...ctx, department: trimmed };
+    case "ask_doctor":
+      return {
+        ...ctx,
+        doctor: /general|any|no|don't know|not sure/i.test(trimmed)
+          ? "General Consultation"
+          : trimmed,
+      };
+    case "ask_date":
+      return { ...ctx, preferredDate: trimmed };
+    case "ask_time":
+      return { ...ctx, preferredTime: trimmed };
+    default:
+      return ctx;
   }
-  return { ...ctx, [field]: trimmed };
+}
+
+export function getWorkflowDebugInfo(ctx: ConversationContext): WorkflowDebugInfo {
+  const collected: Record<string, string | boolean | undefined> = {};
+  if (ctx.name) collected.name = ctx.name;
+  if (ctx.phone) collected.phone = ctx.phone;
+  if (ctx.department) collected.department = ctx.department;
+  if (ctx.doctor) collected.doctor = ctx.doctor;
+  if (ctx.preferredDate) collected.preferredDate = ctx.preferredDate;
+  if (ctx.preferredTime) collected.preferredTime = ctx.preferredTime;
+  if (ctx.location) collected.location = ctx.location;
+  if (ctx.isTravelling !== undefined) collected.isTravelling = ctx.isTravelling;
+
+  const missing: string[] = [];
+  if (ctx.currentWorkflow === "appointment") {
+    for (const step of appointmentSteps()) {
+      const field = step.replace("ask_", "");
+      if (!collected[field] && field !== "travelling") missing.push(field);
+    }
+  } else if (ctx.currentWorkflow === "emergency") {
+    for (const step of emergencySteps()) {
+      const field = step.replace("ask_", "");
+      if (collected[field] === undefined && field !== "travelling") missing.push(field);
+    }
+  }
+
+  const nextStep =
+    ctx.workflowStatus === "active"
+      ? getNextStep(ctx.currentWorkflow, ctx.currentStep) ?? ctx.currentStep
+      : ctx.currentStep;
+
+  return {
+    workflow: ctx.currentWorkflow,
+    workflowStatus: ctx.workflowStatus,
+    currentStep: ctx.currentStep,
+    nextQuestion: questionForStep(nextStep, ctx),
+    collected,
+    missing,
+    sessionState: ctx.state,
+  };
 }
 
 export function getGreeting(language: Language): string {
@@ -159,6 +236,53 @@ export function getGreeting(language: Language): string {
   );
 }
 
+function startWorkflow(
+  ctx: ConversationContext,
+  workflow: WorkflowType,
+  intent: ConversationIntent,
+  firstReply: string
+): EngineResult {
+  const firstStep: WorkflowStep = "ask_name";
+  return {
+    reply: firstReply,
+    context: {
+      ...ctx,
+      currentWorkflow: workflow,
+      workflowStatus: "active",
+      currentStep: firstStep,
+      intent,
+      state: stateForStep(firstStep),
+      greeted: true,
+      isEmergency: workflow === "emergency",
+    },
+  };
+}
+
+function handleActiveWorkflow(ctx: ConversationContext, text: string): EngineResult {
+  const workflow = ctx.currentWorkflow!;
+
+  const updated = storeStepAnswer(ctx, text);
+  const nextStep = getNextStep(workflow, ctx.currentStep);
+
+  if (!nextStep) {
+    if (workflow === "appointment" && !updated.appointmentSaved) {
+      return buildAppointmentComplete(updated);
+    }
+    if (workflow === "emergency") {
+      return buildEmergencyComplete(updated);
+    }
+  }
+
+  return {
+    reply: questionForStep(nextStep!, updated),
+    context: {
+      ...updated,
+      currentStep: nextStep!,
+      state: stateForStep(nextStep!),
+    },
+  };
+}
+
 export function processConversationTurn(
   userMessage: string,
   ctx: ConversationContext
@@ -166,156 +290,111 @@ export function processConversationTurn(
   const text = userMessage.trim();
   const lang = ctx.language;
 
-  if (ctx.state === "SESSION_CLOSED") {
+  if (ctx.state === "SESSION_CLOSED" || ctx.workflowStatus === "closed") {
     return {
       reply: t(
         "This session has ended. Please press Restart if you need further assistance.",
-        "இந்த session முடிந்துவிட்டது. மீண்டும் உதவி வேண்டுமானால் Restart அழுத்தவும்.",
+        "இந்த session மuடிந்துவிட்டது. Restart அழுத்தவும்.",
         lang
       ),
       context: ctx,
     };
   }
 
-  if (ctx.awaitingAnythingElse) {
+  if (ctx.awaitingAnythingElse || ctx.currentStep === "anything_else") {
     if (declinesMoreHelp(text) || isGoodbye(text)) {
       return {
         reply: t(
-          "You're welcome. Thank you for contacting CIPACA Hospital. Take care. Goodbye!",
-          "நன்றி! CIPACA Hospital-ஐ தொடர்பு கொண்டதற்கு நன்றி. நலமாக இருங்கள். போய் வருகிறேன்!",
+          "Thank you for contacting CIPACA. Have a nice day. Goodbye!",
+          "CIPACA-வை தொடர்பு கொண்டதற்கு நன்றி. நல்ல நாள்!",
           lang
         ),
-        context: { ...ctx, state: "SESSION_CLOSED", awaitingAnythingElse: false },
+        context: {
+          ...ctx,
+          state: "SESSION_CLOSED",
+          workflowStatus: "closed",
+          currentStep: "closed",
+          currentWorkflow: null,
+          awaitingAnythingElse: false,
+        },
       };
     }
     return {
-      reply: t(
-        "Of course. What else can I help you with?",
-        "நிச்சயமாக. வேறு எதில் உதவ வேண்டும்?",
-        lang
-      ),
-      context: { ...ctx, state: "CLASSIFICATION", awaitingAnythingElse: false, intent: null },
+      reply: t("Of course. What else can I help you with?", "வேறு எதில் உதவ வேண்டும்?", lang),
+      context: {
+        ...ctx,
+        awaitingAnythingElse: false,
+        workflowStatus: "idle",
+        currentStep: "classify",
+        currentWorkflow: null,
+        intent: null,
+        state: "CLASSIFICATION",
+      },
     };
   }
 
-  if (isGoodbye(text) && ctx.state === "COMPLETED") {
-    return {
-      reply: t(
-        "You're welcome. Thank you for contacting CIPACA. Take care. Goodbye!",
-        "நன்றி! CIPACA-வை தொடர்பு கொண்டதற்கு நன்றி. நலமாக இருங்கள்!",
+  // ACTIVE WORKFLOW — never re-classify intent
+  if (ctx.workflowStatus === "active" && ctx.currentWorkflow) {
+    return handleActiveWorkflow(ctx, text);
+  }
+
+  // No active workflow — classify intent once
+  const intent = detectIntent(text);
+
+  if (intent === "appointment") {
+    return startWorkflow(
+      ctx,
+      "appointment",
+      "appointment",
+      t(
+        "Sure. What is your name?",
+        "நிச்சயமாக. உங்கள் பெயர் என்ன?",
         lang
-      ),
-      context: { ...ctx, state: "SESSION_CLOSED", awaitingAnythingElse: false },
-    };
+      )
+    );
   }
 
-  if (
-    ctx.intent &&
-    ctx.state.startsWith("COLLECTING_") &&
-    !wantsTopicChange(text, ctx.intent)
-  ) {
-    const updated = assignField(ctx, text);
-    if (ctx.intent === "emergency") updated.isEmergency = true;
-
-    const nextField = nextCollectField(updated);
-    if (!nextField) {
-      if (ctx.intent === "appointment" && !updated.appointmentSaved) {
-        return buildAppointmentComplete(updated);
-      }
-      if (ctx.intent === "emergency" && updated.isEmergency) {
-        return buildEmergencyComplete(updated);
-      }
-      return {
-        reply: t(
-          "Thank you. I've recorded your details. Is there anything else I can help you with?",
-          "நன்றி. உங்கள் விவரங்கள் பதிவு செய்யப்பட்டன. வேறு உதவி வேண்டுமா?",
-          lang
-        ),
-        context: { ...updated, state: "COMPLETED", awaitingAnythingElse: true },
-      };
-    }
-
-    updated.state = stateForField(nextField);
-    return { reply: questionForField(nextField, updated), context: updated };
+  if (intent === "emergency") {
+    return startWorkflow(
+      ctx,
+      "emergency",
+      "emergency",
+      t(
+        "I understand this may be an emergency. Please stay calm. What is your name?",
+        "இது emergency ஆக இருக்கலாம். அமைதியாக இருங்கள். உங்கள் பெயர் என்ன?",
+        lang
+      )
+    );
   }
 
-  let intent = ctx.intent;
-  if (!intent || ctx.state === "CLASSIFICATION" || ctx.state === "IDLE") {
-    intent = detectIntent(text) ?? intent ?? "general";
-  }
-
-  const next: ConversationContext = { ...ctx, intent, greeted: true };
-
-  switch (intent) {
-    case "appointment": {
-      if (APPOINTMENT_PATTERNS.test(text) && !next.name) {
-        next.state = "COLLECTING_NAME";
-        next.intent = "appointment";
-        return {
-          reply: t(
-            "Certainly. I'd be happy to help you book an appointment. May I know your name?",
-            "நிச்சயமாக. appointment book செய்ய உதவுகிறேன். உங்கள் பெயர் என்ன?",
-            lang
-          ),
-          context: next,
-        };
-      }
-      if (next.state === "COLLECTING_NAME" || !next.name) {
-        next.state = "COLLECTING_NAME";
-        if (text && !APPOINTMENT_PATTERNS.test(text)) {
-          const withName = assignField(next, text);
-          const nf = nextCollectField(withName);
-          if (nf) {
-            withName.state = stateForField(nf);
-            return { reply: questionForField(nf, withName), context: withName };
-          }
-        }
-        return {
-          reply: t("May I know your name, please?", "உங்கள் பெயர் என்ன?", lang),
-          context: next,
-        };
-      }
-      break;
-    }
-    case "emergency":
-      next.state = "EMERGENCY";
-      next.isEmergency = true;
-      if (!next.name) {
-        next.state = "COLLECTING_NAME";
-        return {
-          reply: t(
-            "I understand this may be an emergency. Please stay calm. May I have your name?",
-            "இது emergency ஆக இருக்கலாம். அமைதியாக இருங்கள். உங்கள் பெயர் என்ன?",
-            lang
-          ),
-          context: next,
-        };
-      }
-      break;
-    case "escalation":
-      return {
-        reply: t(
-          "I'm connecting you to a GRE executive. May I have your name please?",
-          "GRE executive-ஐ connect செய்கிறேன். உங்கள் பெயர் என்ன?",
-          lang
-        ),
-        context: { ...next, state: "COLLECTING_NAME", intent: "escalation" },
-      };
-    default:
-      next.state = "GENERAL";
-      return {
-        reply: t(
-          "I can help with appointments, emergencies, and hospital information. Visiting hours are 9 AM to 8 PM, and emergency services are available 24/7. How may I assist you?",
-          "appointments, emergency, hospital தகவல்களில் உதவ முடியும். Visiting hours 9 AM - 8 PM. Emergency 24/7. எப்படி உதவலாம்?",
-          lang
-        ),
-        context: next,
-      };
+  if (intent === "escalation") {
+    return startWorkflow(
+      ctx,
+      "emergency",
+      "escalation",
+      t(
+        "I'm connecting you to a GRE executive. What is your name?",
+        "GRE executive-ஐ connect செய்கிறேன். உங்கள் பெயர் என்ன?",
+        lang
+      )
+    );
   }
 
   return {
-    reply: t("How may I help you further?", "வேறு எதில் உதவ வேண்டும்?", lang),
-    context: next,
+    reply: t(
+      "I can help with appointments, emergencies, and hospital information. Visiting hours are 9 AM to 8 PM, and emergency services are available 24/7. How may I assist you?",
+      "appointments, emergency, hospital தகவல்களில் உதவ முடியும். Visiting hours 9 AM - 8 PM. Emergency 24/7.",
+      lang
+    ),
+    context: {
+      ...ctx,
+      currentWorkflow: "faq",
+      workflowStatus: "idle",
+      currentStep: "classify",
+      intent: "general",
+      state: "GENERAL",
+      greeted: true,
+    },
   };
 }
 
@@ -325,13 +404,15 @@ function buildEmergencyComplete(ctx: ConversationContext): EngineResult {
 
   return {
     reply: t(
-      `Emergency details recorded. Ticket ID: ${ticketId}. Our emergency team has been notified and will contact you immediately. Is there anything else I can help you with?`,
-      `Emergency விவரங்கள் பதிவு செய்யப்பட்டன. Ticket ID: ${ticketId}. Emergency team-க்கு தெரிவிக்கப்பட்டது. வேறு உதவி வேண்டுமா?`,
+      `Emergency details recorded. Ticket ID: ${ticketId}. Our emergency team and GRE have been notified. Is there anything else I can help you with?`,
+      `Emergency பதிவு செய்யப்பட்டது. Ticket ID: ${ticketId}. Emergency team-க்கு தெரிவிக்கப்பட்டது. வேறு உதவி வேண்டுமா?`,
       lang
     ),
     context: {
       ...ctx,
       state: "COMPLETED",
+      workflowStatus: "completed",
+      currentStep: "anything_else",
       awaitingAnythingElse: true,
       referenceId: ticketId,
       summary: `Emergency: ${ctx.name} at ${ctx.location}`,
@@ -342,6 +423,7 @@ function buildEmergencyComplete(ctx: ConversationContext): EngineResult {
       phone: ctx.phone!,
       location: ctx.location!,
       emergencyType: ctx.emergencyType ?? "General Emergency",
+      isTravelling: ctx.isTravelling,
       referenceId: ticketId,
     },
   };
@@ -353,13 +435,15 @@ function buildAppointmentComplete(ctx: ConversationContext): EngineResult {
 
   return {
     reply: t(
-      `Your appointment request has been recorded successfully. Reference ID: ${refId}. Our team will contact you shortly. Is there anything else I can help you with?`,
-      `உங்கள் appointment request பதிவு செய்யப்பட்டது. Reference ID: ${refId}. எங்கள் team விரைவில் தொடர்பு கொள்ளும். வேறு உதவி வேண்டுமா?`,
+      `Appointment booked successfully. Reference ID: ${refId}. Our team will contact you shortly. Is there anything else I can help you with?`,
+      `Appointment பதிவு செய்யப்பட்டது. Reference ID: ${refId}. எங்கள் team தொடர்பு கொள்ளும். வேறு உதவி வேண்டுமா?`,
       lang
     ),
     context: {
       ...ctx,
       state: "COMPLETED",
+      workflowStatus: "completed",
+      currentStep: "anything_else",
       awaitingAnythingElse: true,
       appointmentSaved: true,
       referenceId: refId,
@@ -380,31 +464,32 @@ function buildAppointmentComplete(ctx: ConversationContext): EngineResult {
 }
 
 export function buildContextPrompt(ctx: ConversationContext): string {
-  const known: string[] = [];
-  if (ctx.intent) known.push(`intent=${ctx.intent}`);
-  if (ctx.name) known.push(`name=${ctx.name}`);
-  if (ctx.phone) known.push(`phone=${ctx.phone}`);
-  if (ctx.department) known.push(`department=${ctx.department}`);
-  if (ctx.doctor) known.push(`doctor=${ctx.doctor}`);
-  if (ctx.preferredDate) known.push(`date=${ctx.preferredDate}`);
-  if (ctx.preferredTime) known.push(`time=${ctx.preferredTime}`);
-  if (ctx.location) known.push(`location=${ctx.location}`);
+  const debug = getWorkflowDebugInfo(ctx);
+  const known = Object.entries(debug.collected)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(", ");
 
   return `
-CURRENT SESSION STATE: ${ctx.state}
-KNOWN INFORMATION: ${known.length ? known.join(", ") : "none yet"}
-AWAITING ANYTHING ELSE: ${ctx.awaitingAnythingElse}
-SESSION CLOSED: ${ctx.state === "SESSION_CLOSED"}
+CONVERSATION ID: ${ctx.conversationId ?? "unknown"}
+CURRENT WORKFLOW: ${ctx.currentWorkflow ?? "none"} (${ctx.workflowStatus})
+CURRENT STEP: ${ctx.currentStep}
+SESSION STATE: ${ctx.state}
+COLLECTED: ${known || "none"}
+MISSING: ${debug.missing.join(", ") || "none"}
+NEXT QUESTION TOPIC: ${debug.nextQuestion}
 
 CRITICAL RULES:
-- NEVER restart with a greeting unless state is IDLE or GREETING.
-- Continue from current state. Do NOT ask for information already collected.
-- Ask ONE question at a time.
-- If appointment flow is active, stay in appointment flow.
-- If user says thank you/bye after completion, say goodbye politely and end session.
+- Workflow engine controls progression. Do NOT restart or re-classify intent.
+- If workflow is ACTIVE, continue the current step only.
+- Do NOT ask for information already collected.
+- Ask ONE question at a time matching the current step.
 `.trim();
 }
 
 export function resetConversationContext(language: Language): ConversationContext {
   return createInitialContext(language);
+}
+
+export function isWorkflowActive(ctx: ConversationContext): boolean {
+  return ctx.workflowStatus === "active" && ctx.currentWorkflow !== null;
 }

@@ -499,6 +499,9 @@ export function useFallbackVoice() {
           language,
           greeted: true,
           state: "CLASSIFICATION",
+          workflowStatus: "idle",
+          currentStep: "classify",
+          currentWorkflow: null,
         });
         await speak(greeting);
       }

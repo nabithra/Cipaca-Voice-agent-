@@ -308,8 +308,29 @@ export type ConversationIntent =
   | "escalation"
   | null;
 
+export type WorkflowType = "appointment" | "emergency" | "faq" | null;
+
+export type WorkflowStatus = "idle" | "active" | "completed" | "closed";
+
+export type WorkflowStep =
+  | "classify"
+  | "ask_name"
+  | "ask_phone"
+  | "ask_location"
+  | "ask_travelling"
+  | "ask_department"
+  | "ask_doctor"
+  | "ask_date"
+  | "ask_time"
+  | "anything_else"
+  | "closed";
+
 export interface ConversationContext {
+  conversationId?: string;
   state: ConversationStateType;
+  currentWorkflow: WorkflowType;
+  workflowStatus: WorkflowStatus;
+  currentStep: WorkflowStep;
   intent: ConversationIntent;
   language: Language;
   name?: string;
@@ -319,6 +340,7 @@ export interface ConversationContext {
   preferredDate?: string;
   preferredTime?: string;
   location?: string;
+  isTravelling?: boolean;
   emergencyType?: string;
   isEmergency?: boolean;
   appointmentId?: string;
@@ -331,7 +353,11 @@ export interface ConversationContext {
 
 export function createInitialContext(language: Language = "en"): ConversationContext {
   return {
+    conversationId: `conv-${Date.now()}`,
     state: "IDLE",
+    currentWorkflow: null,
+    workflowStatus: "idle",
+    currentStep: "classify",
     intent: null,
     language,
     greeted: false,

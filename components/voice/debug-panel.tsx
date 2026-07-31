@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { Bug, ChevronDown, ChevronUp } from "lucide-react";
 import { voiceDebug, type PipelineState, type PipelineStatus } from "@/lib/voice-client";
+import { getWorkflowDebugInfo } from "@/lib/conversation-engine";
+import { useVoiceStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 const STAGE_LABELS: Record<keyof Omit<PipelineState, "lastError" | "lastLog" | "openaiConfigured" | "apiSource">, string> = {
@@ -41,6 +43,8 @@ function StatusDot({ status }: { status: PipelineStatus }) {
 export function DebugPanel() {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<PipelineState>(voiceDebug.getState());
+  const { conversationContext } = useVoiceStore();
+  const workflow = getWorkflowDebugInfo(conversationContext);
 
   useEffect(() => {
     return voiceDebug.subscribe(setState);
@@ -60,14 +64,31 @@ export function DebugPanel() {
       </button>
 
       {open && (
-        <div className="mt-2 rounded-xl bg-black/90 text-white p-3 text-xs backdrop-blur-sm space-y-2 shadow-xl">
+        <div className="mt-2 rounded-xl bg-black/90 text-white p-3 text-xs backdrop-blur-sm space-y-2 shadow-xl max-h-[70vh] overflow-y-auto">
+          <div className="border-b border-white/10 pb-2 space-y-1">
+            <p className="font-semibold">Workflow Engine</p>
+            <p><span className="text-white/60">Workflow:</span> {workflow.workflow ?? "none"}</p>
+            <p><span className="text-white/60">Status:</span> {workflow.workflowStatus}</p>
+            <p><span className="text-white/60">Step:</span> {workflow.currentStep}</p>
+            <p><span className="text-white/60">Session:</span> {workflow.sessionState}</p>
+            <p className="text-white/60 truncate"><span className="text-white/60">Next:</span> {workflow.nextQuestion}</p>
+            {Object.keys(workflow.collected).length > 0 && (
+              <p className="text-green-300/80 break-words">
+                Collected: {JSON.stringify(workflow.collected)}
+              </p>
+            )}
+            {workflow.missing.length > 0 && (
+              <p className="text-yellow-300/80">Missing: {workflow.missing.join(", ")}</p>
+            )}
+          </div>
+
           <div className="flex justify-between items-center border-b border-white/10 pb-2">
-            <span className="font-semibold">Pipeline Status</span>
+            <span className="font-semibold">Pipeline</span>
             <span className={cn(
               "px-2 py-0.5 rounded-full text-[10px]",
               state.openaiConfigured ? "bg-green-500/20 text-green-300" : "bg-orange-500/20 text-orange-300"
             )}>
-              OpenAI: {state.openaiConfigured ? "Yes" : "No — local mode"}
+              {state.openaiConfigured ? "OpenAI" : "Demo Mode"}
             </span>
           </div>
 
