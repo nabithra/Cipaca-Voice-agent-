@@ -134,16 +134,49 @@ export function recognitionUnavailableMessage(): string {
 }
 
 export function recognitionFailedMessage(error: string): string {
-  if (error === "network") {
-    return "Voice recognition lost connection. Tap the microphone to try again.";
+  switch (error) {
+    case "network":
+      return "Voice recognition lost connection. Tap the microphone to try again.";
+    case "no-speech":
+      return "No speech detected. Tap the microphone and speak clearly.";
+    case "audio-capture":
+      return "Could not access the microphone. Another app may be using it. Close other apps and try again.";
+    case "not-allowed":
+      return permissionDeniedMessage();
+    case "service-not-allowed":
+      return "Speech recognition is not allowed on this device or browser. Try Chrome on Android or Safari on iPhone.";
+    case "display-capture":
+      return "Screen capture blocked voice recognition. Close screen recording and tap the microphone again.";
+    case "aborted":
+      return "Voice recognition was interrupted.";
+    default:
+      return "Voice recognition interrupted. Tap the microphone to continue.";
   }
-  if (error === "no-speech") {
-    return "No speech detected. Tap the microphone and speak clearly.";
+}
+
+/** Classify recognition errors for messaging and retry policy. */
+export function recognitionErrorInfo(error: string): {
+  message: string | null;
+  recoverable: boolean;
+} {
+  switch (error) {
+    case "aborted":
+      return { message: null, recoverable: false };
+    case "no-speech":
+      return { message: null, recoverable: true };
+    case "not-allowed":
+      return { message: permissionDeniedMessage(), recoverable: false };
+    case "service-not-allowed":
+      return { message: recognitionFailedMessage("service-not-allowed"), recoverable: false };
+    case "display-capture":
+      return { message: recognitionFailedMessage("display-capture"), recoverable: false };
+    case "audio-capture":
+      return { message: recognitionFailedMessage("audio-capture"), recoverable: true };
+    case "network":
+      return { message: recognitionFailedMessage("network"), recoverable: true };
+    default:
+      return { message: recognitionFailedMessage(error), recoverable: true };
   }
-  if (error === "audio-capture") {
-    return "Could not access the microphone. Check permissions and try again.";
-  }
-  return "Voice recognition interrupted. Tap the microphone to continue.";
 }
 
 /** Prime speechSynthesis voices (async on mobile). */
