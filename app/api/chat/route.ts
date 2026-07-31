@@ -6,9 +6,13 @@ import {
   isOpenAIConfigured,
   isDemoMode,
 } from "@/lib/openai";
+import { getChatModel } from "@/lib/openai-config";
 import { saveAppointment, saveEmergency } from "@/server/actions/leads";
 import type { ConversationContext, ConversationMessage, Lead } from "@/types";
 import { createInitialContext } from "@/types";
+import { chatRequestSchema } from "@/lib/validation/chat-schema";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { logger } from "@/lib/logger";
 
 /** Vercel Hobby plan max serverless duration is 10 seconds. */
 export const maxDuration = 10;
@@ -21,14 +25,14 @@ function errorResponse(
   const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error ? error.stack : undefined;
 
-  console.error(`[${context}]`, { message, stack });
+  logger.error(context, { message, stack: process.env.NODE_ENV === "development" ? stack : undefined });
 
   return NextResponse.json(
     {
       error: message,
       details: `${context}: ${message}`,
       statusCode: status,
-      model: isOpenAIConfigured() ? "gpt-4o-mini" : "local-fallback",
+      model: isOpenAIConfigured() ? getChatModel() : "local-fallback",
       openaiConfigured: isOpenAIConfigured(),
       demoMode: isDemoMode(),
       stack: process.env.NODE_ENV === "development" ? stack : undefined,
@@ -52,12 +56,34 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
+  const ip = getClientIp(request);
+  const rate = checkRateLimit(`chat:${ip}`);
+
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again shortly." },
+      { status: 429, headers: { "Retry-After": "60" } }
+    );
+  }
 
   try {
-    const body = await request.json();
-    const { messages, language = "en", action, conversationContext } = body;
+    const raw = await request.json();
+    const parsed = chatRequestSchema.safeParse(raw);
 
-    console.log("[/api/chat] Request:", {
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Invalid request", details: parsed.error.flatten() },
+        { status: 400 }
+      );
+    }
+
+    const body = parsed.data;
+    const { language, action, conversationContext } = body;
+    const sessionId = body.sessionId;
+    const messages = body.messages;
+
+    logger.info("chat request", {
+      sessionId,
       action: action ?? "chat",
       language,
       messageCount: messages?.length,
@@ -66,7 +92,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (action === "tts") {
-      const text = body.text as string;
+      const text = body.text;
       if (!text?.trim()) {
         return NextResponse.json({ error: "Missing text for TTS" }, { status: 400 });
       }
@@ -86,18 +112,18 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      console.log("[/api/chat] TTS success", { durationMs: Date.now() - startTime });
+      logger.info("tts success", { sessionId, durationMs: Date.now() - startTime });
       return new NextResponse(audio, {
         headers: { "Content-Type": "audio/mpeg" },
       });
     }
 
     if (action === "search") {
-      const result = executeSearchKnowledge(body.query);
+      const result = executeSearchKnowledge(body.query ?? "");
       return NextResponse.json({ result });
     }
 
-    if (!messages || !Array.isArray(messages)) {
+    if (!messages?.length) {
       return NextResponse.json(
         { error: "Missing messages array", details: "Request body must include messages: []" },
         { status: 400 }
@@ -105,7 +131,7 @@ export async function POST(request: NextRequest) {
     }
 
     const ctx: ConversationContext =
-      conversationContext ?? createInitialContext(language);
+      (conversationContext as ConversationContext | undefined) ?? createInitialContext(language);
 
     const result = await getChatResponse(
       messages as { role: "user" | "assistant"; content: string }[],
@@ -113,8 +139,16 @@ export async function POST(request: NextRequest) {
       ctx
     );
 
+    const conversation: ConversationMessage[] = [
+      ...(messages as ConversationMessage[]),
+      {
+        role: "assistant",
+        content: result.reply,
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
     let savedLead: Lead | undefined;
-    const conversation = messages as ConversationMessage[];
 
     if (result.shouldSaveAppointment && result.appointmentData) {
       const saveResult = await saveAppointment({
@@ -136,7 +170,6 @@ export async function POST(request: NextRequest) {
         location: result.emergencyData.location,
         emergencyType: result.emergencyData.emergencyType ?? "General Emergency",
         isTravelling: result.emergencyData.isTravelling ?? false,
-        referenceId: result.emergencyData.referenceId,
         language,
         conversation,
         conversationSummary: result.conversationContext?.summary,
@@ -146,10 +179,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log("[/api/chat] Response:", {
+    logger.info("chat response", {
+      sessionId,
       source: result.source,
       replyLength: result.reply.length,
       state: result.conversationContext?.state,
+      savedLead: Boolean(savedLead),
       durationMs: Date.now() - startTime,
     });
 
@@ -157,7 +192,7 @@ export async function POST(request: NextRequest) {
       reply: result.reply,
       toolCalls: result.toolCalls,
       source: result.source,
-      model: result.model ?? (result.source === "local" ? "local-assistant" : "gpt-4o-mini"),
+      model: result.model ?? (result.source === "local" ? "local-assistant" : getChatModel()),
       openaiConfigured: isOpenAIConfigured(),
       demoMode: isDemoMode(),
       conversationContext: result.conversationContext,

@@ -104,16 +104,6 @@ export function VoiceInterface() {
         stage={emergencyStage}
         ticketId={emergencyTicketId}
         greAssigned={greAssigned}
-        isDemoMode={isDemoMode}
-        isComplete={!!emergencyTicketId && emergencyStage === "connecting_human"}
-        handoffMessage={
-          emergencyTicketId
-            ? (messages
-                .filter((m) => m.role === "assistant")
-                .reverse()
-                .find((m) => m.content.includes("Emergency ticket"))?.content ?? null)
-            : null
-        }
       />
 
       <EscalationOverlay
@@ -139,6 +129,13 @@ export function VoiceInterface() {
                       demoMode={isDemoMode}
                       className="mb-6"
                     />
+                    <div className="sr-only" aria-live="polite" aria-atomic="true">
+                      {status === "listening" && "Listening for your speech."}
+                      {status === "processing" && "Processing your request."}
+                      {status === "speaking" && "Assistant is speaking."}
+                      {status === "connecting" && "Connecting to voice assistant."}
+                      {status === "error" && error ? `Error: ${error}` : ""}
+                    </div>
 
                     <MicrophoneButton
                       isActive={isActive}

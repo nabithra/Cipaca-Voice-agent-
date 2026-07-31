@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { CIPACA_SYSTEM_PROMPT, getLanguageInstruction } from "@/lib/prompt";
 import { OPENAI_CHAT_TOOLS } from "@/lib/tools";
 import { searchKnowledgeBase } from "@/lib/knowledge-base";
-import { isOpenAIConfigured, isDemoMode } from "@/lib/openai-config";
+import { isOpenAIConfigured, isDemoMode, getChatModel, getRealtimeModel, getTtsModel, isNlgParaphraseEnabled } from "@/lib/openai-config";
 import { getOpenAIClient } from "@/lib/openai-client";
 import { getLocalGreeting } from "@/lib/local-assistant";
 import { buildContextPrompt, processConversationTurn, isWorkflowActive } from "@/lib/conversation-engine";
@@ -58,7 +58,7 @@ export async function createRealtimeSession(
   const { AI_TOOLS } = await import("@/lib/tools");
 
   const session = await openai.beta.realtime.sessions.create({
-    model: "gpt-4o-realtime-preview-2024-12-17",
+    model: getRealtimeModel() as "gpt-4o-realtime-preview-2024-12-17",
     voice: "alloy",
     modalities: ["text", "audio"],
     instructions: `${CIPACA_SYSTEM_PROMPT}\n\n${getLanguageInstruction(language)}`,
@@ -115,7 +115,7 @@ export async function getChatCompletionWithTools(
   conversationContext?: ConversationContext
 ): Promise<ChatResult> {
   const openai = getOpenAIClient();
-  const model = "gpt-4o-mini";
+  const model = getChatModel();
   const allToolCalls: ChatToolCall[] = [];
   const ctx = conversationContext ?? createInitialContext(language);
 
@@ -180,6 +180,29 @@ export async function getChatCompletionWithTools(
   };
 }
 
+async function maybeParaphraseReply(reply: string, language: Language): Promise<string> {
+  if (!isNlgParaphraseEnabled() || !reply.trim()) return reply;
+  try {
+    const openai = getOpenAIClient();
+    const response = await openai.chat.completions.create({
+      model: getChatModel(),
+      messages: [
+        {
+          role: "system",
+          content:
+            "Rephrase the hospital assistant message naturally. Do NOT change meaning, facts, or questions. Return only the rephrased text.",
+        },
+        { role: "user", content: `Language: ${language}\n\n${reply}` },
+      ],
+      max_tokens: 300,
+      temperature: 0.4,
+    });
+    return response.choices[0]?.message?.content?.trim() || reply;
+  } catch {
+    return reply;
+  }
+}
+
 export async function getChatResponse(
   messages: { role: "user" | "assistant"; content: string }[],
   language: Language = "en",
@@ -188,7 +211,7 @@ export async function getChatResponse(
   const ctx = conversationContext ?? createInitialContext(language);
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const engineResult = lastUser
-    ? processConversationTurn(lastUser.content, ctx, { isDemoMode: isDemoMode() })
+    ? processConversationTurn(lastUser.content, ctx)
     : { reply: "How may I help you?", context: ctx };
 
   const useEngineReply =
@@ -200,8 +223,9 @@ export async function getChatResponse(
     engineResult.context.state === "SESSION_CLOSED";
 
   if (useEngineReply) {
+    const finalReply = await maybeParaphraseReply(engineResult.reply, language);
     return {
-      reply: engineResult.reply,
+      reply: finalReply,
       toolCalls: [],
       source: "local",
       model: "local-assistant",
@@ -244,7 +268,7 @@ export async function synthesizeSpeech(text: string): Promise<ArrayBuffer | null
   try {
     const openai = getOpenAIClient();
     const response = await openai.audio.speech.create({
-      model: "tts-1",
+      model: getTtsModel(),
       voice: "alloy",
       input: text,
       response_format: "mp3",

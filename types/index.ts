@@ -64,6 +64,14 @@ export type NotificationType =
   | "escalation"
   | "arrival";
 
+export type AuditAction =
+  | "view_dashboard"
+  | "export_leads"
+  | "view_lead"
+  | "view_lead_pii"
+  | "login"
+  | "logout";
+
 export interface ConversationMessage {
   role: "user" | "assistant" | "system";
   content: string;
@@ -153,7 +161,6 @@ export interface EmergencyInput {
   language?: Language;
   conversation?: ConversationMessage[];
   conversationSummary?: string;
-  referenceId?: string;
 }
 
 export interface AppointmentInput {
@@ -318,7 +325,6 @@ export type WorkflowStep =
   | "ask_name"
   | "ask_phone"
   | "ask_location"
-  | "ask_emergency_type"
   | "ask_travelling"
   | "ask_department"
   | "ask_doctor"

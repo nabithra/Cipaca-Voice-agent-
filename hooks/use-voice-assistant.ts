@@ -1,29 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { useVoiceStore, saveLeadToLocalStorage } from "@/lib/store";
-import { useLeadStore } from "@/lib/store";
+import { useVoiceStore, saveLeadToLocalStorage, syncDraftLeadToStores, syncNotificationForLead } from "@/lib/store";
+import { useLeadStore, useNotificationStore } from "@/lib/store";
 import { useToolHandler } from "@/hooks/use-tool-handler";
-import { speakText, fetchWithRetry, voiceDebug, isLikelyAssistantEcho } from "@/lib/voice-client";
-import {
-  ensureAudioContext,
-  logVoiceEvent,
-  permissionDeniedMessage,
-  primeSpeechSynthesisVoices,
-  recognitionUnavailableMessage,
-  releaseMicrophoneStream,
-  requestMicrophoneAccess,
-  setMicrophoneEnabled,
-  SILENCE_MS,
-  RECOGNITION_RESTART_DELAY_MS,
-} from "@/lib/mobile-voice";
-import { SpeechRecognitionManager } from "@/lib/speech-recognition-manager";
+import { speakText, fetchWithRetry, voiceDebug } from "@/lib/voice-client";
 import { getLocalGreeting } from "@/lib/local-assistant";
-import {
-  emergencyStageFromContext,
-  playEmergencyTone,
-} from "@/lib/emergency-workflow";
 import type { ConversationContext, ConversationMessage, Lead } from "@/types";
+import { analytics } from "@/lib/analytics";
+
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface RealtimeEvent {
   type: string;
@@ -180,8 +166,7 @@ export function useRealtimeVoice() {
       };
 
       voiceDebug.setStage("microphone", "loading");
-      await ensureAudioContext();
-      const ms = await requestMicrophoneAccess({ retries: 1 });
+      const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
       voiceDebug.setStage("microphone", "working");
       pc.addTrack(ms.getTracks()[0]);
 
@@ -216,11 +201,7 @@ export function useRealtimeVoice() {
       await pc.setRemoteDescription({ type: "answer", sdp: await sdpResponse.text() });
       return true;
     } catch (err) {
-      const msg =
-        err instanceof Error && err.message === "PERMISSION_DENIED"
-          ? permissionDeniedMessage()
-          : `Realtime failed: ${err instanceof Error ? err.message : "unknown"}`;
-      voiceDebug.error(msg, "openaiRequest");
+      voiceDebug.error(`Realtime failed: ${err instanceof Error ? err.message : "unknown"}`, "openaiRequest");
       cleanup();
       return false;
     }
@@ -245,19 +226,14 @@ export function useRealtimeVoice() {
 }
 
 export function useFallbackVoice() {
-  const recognitionManagerRef = useRef<SpeechRecognitionManager | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const isSpeakingRef = useRef(false);
   const isProcessingRef = useRef(false);
-  const isListeningRef = useRef(false);
-  const recognitionRunningRef = useRef(false);
-  const lastSpokenRef = useRef("");
-  const sessionTranscriptRef = useRef("");
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const recognitionRetryRef = useRef(false);
-  const continuousModeRef = useRef(true);
   const { handleToolCall } = useToolHandler();
   const { addLead } = useLeadStore();
+  const { addNotification } = useNotificationStore();
+  const lastActivityRef = useRef(Date.now());
+  const sessionStartedRef = useRef(false);
 
   const {
     language,
@@ -273,143 +249,38 @@ export function useFallbackVoice() {
     setHasActiveSession,
     setDemoMode,
     setEmergency,
-    setEmergencyStage,
-    setGreAssigned,
   } = useVoiceStore();
 
-  const clearSilenceTimer = useCallback(() => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
+  const resumeListening = useCallback(() => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.start();
+      setStatus("listening");
+    } catch {
+      // already running
     }
-  }, []);
-
-  const stopListening = useCallback(
-    async (reason = "manual") => {
-      clearSilenceTimer();
-      sessionTranscriptRef.current = "";
-      isListeningRef.current = false;
-      voiceDebug.setStage("speechRecognition", "idle");
-      await recognitionManagerRef.current?.stop(reason);
-      recognitionRunningRef.current = false;
-    },
-    [clearSilenceTimer]
-  );
-
-  const startListening = useCallback(async () => {
-    const manager = recognitionManagerRef.current;
-    if (!manager) return;
-    if (isSpeakingRef.current || isProcessingRef.current) return;
-    if (recognitionRunningRef.current) return;
-    if (!continuousModeRef.current) return;
-    if (useVoiceStore.getState().conversationContext.state === "SESSION_CLOSED") return;
-
-    sessionTranscriptRef.current = "";
-    setStatus("listening");
-    await manager.start();
   }, [setStatus]);
-
-  const handleRecognitionError = useCallback(
-    (code: string, userMessage: string | null, recoverable: boolean) => {
-      recognitionRunningRef.current = false;
-      isListeningRef.current = false;
-      voiceDebug.setStage("speechRecognition", "idle");
-
-      if (code === "aborted") return;
-
-      if (!recoverable) {
-        if (userMessage) setError(userMessage);
-        if (code === "not-allowed" || code === "service-not-allowed") {
-          continuousModeRef.current = false;
-        }
-        return;
-      }
-
-      if (code === "no-speech") {
-        if (
-          continuousModeRef.current &&
-          !isSpeakingRef.current &&
-          !isProcessingRef.current
-        ) {
-          window.setTimeout(() => void startListening(), RECOGNITION_RESTART_DELAY_MS);
-        }
-        return;
-      }
-
-      if (!recognitionRetryRef.current) {
-        recognitionRetryRef.current = true;
-        logVoiceEvent("Recognition retry", code);
-        window.setTimeout(() => {
-          recognitionRetryRef.current = false;
-          if (continuousModeRef.current && !isSpeakingRef.current && !isProcessingRef.current) {
-            void startListening();
-          }
-        }, 800);
-        return;
-      }
-
-      if (userMessage) setError(userMessage);
-    },
-    [setError, startListening]
-  );
-
-  const flushTranscript = useCallback(
-    (source: string) => {
-      clearSilenceTimer();
-      const text = sessionTranscriptRef.current.trim();
-      sessionTranscriptRef.current = "";
-      void stopListening(source);
-      if (text) {
-        logVoiceEvent("Transcript", text);
-        void processUserInputRef.current?.(text);
-      }
-    },
-    [clearSilenceTimer, stopListening]
-  );
-
-  const scheduleSilenceFlush = useCallback(() => {
-    clearSilenceTimer();
-    silenceTimerRef.current = setTimeout(() => {
-      flushTranscript("silence");
-    }, SILENCE_MS);
-  }, [clearSilenceTimer, flushTranscript]);
-
-  const processUserInputRef = useRef<(text: string) => Promise<void>>(async () => {});
 
   const speak = useCallback(
     async (text: string) => {
       if (isMuted || !text.trim()) return;
-
       isSpeakingRef.current = true;
-      await stopListening("tts-start");
-      setMicrophoneEnabled(micStreamRef.current, false);
-      lastSpokenRef.current = text;
       setStatus("speaking");
-      setUserTranscript("");
-
       try {
         const demoMode = useVoiceStore.getState().isDemoMode;
         await speakText(text, language, isMuted, { demoMode });
       } finally {
         isSpeakingRef.current = false;
-        voiceDebug.setStage("speaker", "idle");
-        if (!isProcessingRef.current && !isMuted) {
-          setMicrophoneEnabled(micStreamRef.current, true);
-        }
-        if (!isProcessingRef.current && continuousModeRef.current) {
-          window.setTimeout(() => void startListening(), RECOGNITION_RESTART_DELAY_MS);
-        }
+        setStatus("listening");
+        resumeListening();
       }
     },
-    [isMuted, language, startListening, stopListening, setStatus, setUserTranscript]
+    [isMuted, language, resumeListening, setStatus]
   );
 
   const processUserInput = useCallback(
-    async (recognizedTranscript: string) => {
-      if (isProcessingRef.current || isSpeakingRef.current) return;
-
-      const text = recognizedTranscript.trim();
-      if (!text) return;
+    async (text: string) => {
+      if (isProcessingRef.current) return;
 
       const store = useVoiceStore.getState();
       if (store.conversationContext.state === "SESSION_CLOSED") {
@@ -417,37 +288,23 @@ export function useFallbackVoice() {
         return;
       }
 
-      // Reject echo of assistant's own TTS
-      const lastAssistant = [...store.messages]
-        .reverse()
-        .find((m) => m.role === "assistant");
-      if (
-        (lastSpokenRef.current && isLikelyAssistantEcho(text, lastSpokenRef.current)) ||
-        (lastAssistant && isLikelyAssistantEcho(text, lastAssistant.content))
-      ) {
-        voiceDebug.log(`Ignored assistant echo: "${text.slice(0, 60)}"`);
-        logVoiceEvent("Transcript ignored", "assistant echo");
-        if (continuousModeRef.current) {
-          window.setTimeout(() => void startListening(), RECOGNITION_RESTART_DELAY_MS);
-        }
-        return;
-      }
-
-      await stopListening("processing");
-      setMicrophoneEnabled(micStreamRef.current, false);
       isProcessingRef.current = true;
+      lastActivityRef.current = Date.now();
 
-      logVoiceEvent("Transcript", text);
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      isSpeakingRef.current = false;
 
       setUserTranscript(text);
       voiceDebug.setStage("transcript", "working");
+      voiceDebug.log(`User said: "${text}"`);
 
       const userMsg: ConversationMessage = {
         role: "user",
         content: text,
         timestamp: new Date().toISOString(),
       };
-      console.log("[CIPACA] Outgoing User Message:", text);
       addMessage(userMsg);
 
       const priorMessages = useVoiceStore.getState().messages;
@@ -484,46 +341,49 @@ export function useFallbackVoice() {
         voiceDebug.setStage("openaiRequest", "working");
         voiceDebug.setStage("openaiResponse", "working");
         voiceDebug.setApiSource(source === "openai" ? "openai" : "local");
-        console.log("[CIPACA] AI Response:", responseText);
-        voiceDebug.log(`AI Response: "${responseText.slice(0, 80)}..."`);
+        voiceDebug.log(`AI (${source}): "${responseText.slice(0, 80)}..."`);
 
         if (result.data.conversationContext) {
-          const newCtx = result.data.conversationContext;
-          setConversationContext(newCtx);
-
-          if (newCtx.currentWorkflow === "emergency") {
-            const store = useVoiceStore.getState();
-            if (!store.isEmergency) {
-              setEmergency(true);
-              playEmergencyTone();
-            }
-            setEmergencyStage(emergencyStageFromContext(newCtx));
-          }
-
-          if (
-            newCtx.workflowStatus === "completed" &&
-            newCtx.currentWorkflow === "emergency"
-          ) {
-            setEmergencyStage("connecting_human");
-          }
+          setConversationContext(result.data.conversationContext);
+          const updatedCtx = result.data.conversationContext;
+          const allMessages = [
+            ...priorMessages,
+            userMsg,
+            {
+              role: "assistant" as const,
+              content: responseText,
+              timestamp: new Date().toISOString(),
+            },
+          ];
+          syncDraftLeadToStores(
+            updatedCtx,
+            allMessages,
+            lang,
+            sessionId ?? `session-${Date.now()}`,
+            addLead
+          );
         }
 
         if (result.data.savedLead) {
           addLead(result.data.savedLead);
-          saveLeadToLocalStorage(result.data.savedLead);
+          const saved = saveLeadToLocalStorage(result.data.savedLead);
+          syncNotificationForLead(result.data.savedLead, addNotification);
           if (result.data.savedLead.category === "Emergency") {
-            const ticketId =
+            analytics.trackCompletion("emergency");
+            setEmergency(
+              true,
               result.data.savedLead.ticketId ??
-              result.data.savedLead.referenceId ??
-              result.data.conversationContext?.referenceId;
-            setEmergency(true, ticketId);
-            setEmergencyStage("connecting_human");
-            if (useVoiceStore.getState().isDemoMode) {
-              setGreAssigned("Demo GRE Executive");
-            } else if (result.data.savedLead.greAssigned) {
-              setGreAssigned(result.data.savedLead.greAssigned);
-            }
+                result.data.savedLead.referenceId ??
+                undefined
+            );
+          } else if (result.data.savedLead.category === "Appointment") {
+            analytics.trackCompletion("appointment");
           }
+          if (!saved) {
+            setError("Lead saved in memory but local storage failed. Check browser settings.");
+          }
+        } else if (result.data.conversationContext?.workflowStatus === "closed") {
+          analytics.trackDropOff(result.data.conversationContext.currentStep ?? "closed");
         }
 
         if (result.data.toolCalls?.length) {
@@ -537,7 +397,7 @@ export function useFallbackVoice() {
         voiceDebug.setApiSource("local");
 
         responseText = "I'm here to help. Could you please repeat that?";
-        console.log("[CIPACA] AI Response (fallback):", responseText);
+        voiceDebug.log(`Using fallback response: "${responseText.slice(0, 80)}"`);
         voiceDebug.setStage("openaiResponse", "fallback");
       }
 
@@ -550,29 +410,22 @@ export function useFallbackVoice() {
 
       await speak(responseText);
       setUserTranscript("");
-      setAiTranscript("");
       isProcessingRef.current = false;
     },
     [
       addLead,
+      addNotification,
       addMessage,
       handleToolCall,
       setAiTranscript,
       setConversationContext,
       setEmergency,
-      setEmergencyStage,
-      setGreAssigned,
       setError,
       setStatus,
       setUserTranscript,
       speak,
-      stopListening,
     ]
   );
-
-  useEffect(() => {
-    processUserInputRef.current = processUserInput;
-  }, [processUserInput]);
 
   const connect = useCallback(async (): Promise<boolean> => {
     try {
@@ -586,6 +439,10 @@ export function useFallbackVoice() {
       }
       if (!store.hasActiveSession) {
         setHasActiveSession(true);
+      }
+      if (!sessionStartedRef.current) {
+        sessionStartedRef.current = true;
+        analytics.trackSessionStart();
       }
       useVoiceStore.getState().setCallStartTime(Date.now());
 
@@ -601,65 +458,69 @@ export function useFallbackVoice() {
       }
 
       voiceDebug.setStage("microphone", "loading");
-      await ensureAudioContext();
-      primeSpeechSynthesisVoices();
+      const SpeechRecognitionAPI =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
 
-      try {
-        micStreamRef.current = await requestMicrophoneAccess({ retries: 1 });
-      } catch (err) {
-        if (err instanceof Error && err.message === "PERMISSION_DENIED") {
-          setError(permissionDeniedMessage());
-        } else {
-          setError("Could not access microphone. Please check permissions and try again.");
-        }
-        setStatus("error");
-        return false;
-      }
-
-      continuousModeRef.current = true;
-      recognitionRetryRef.current = false;
-
-      if (!recognitionManagerRef.current) {
-        recognitionManagerRef.current = new SpeechRecognitionManager({
-          language,
-          onTranscript: (text) => {
-            if (isSpeakingRef.current || isProcessingRef.current) return;
-            sessionTranscriptRef.current = text;
-            setUserTranscript(text);
-            voiceDebug.setStage("speechRecognition", "working");
-            scheduleSilenceFlush();
-          },
-          onSpeechEnd: () => {
-            if (
-              !isSpeakingRef.current &&
-              !isProcessingRef.current &&
-              sessionTranscriptRef.current
-            ) {
-              scheduleSilenceFlush();
-            }
-          },
-          onError: handleRecognitionError,
-          onStateChange: ({ recognitionRunning, isListening }) => {
-            recognitionRunningRef.current = recognitionRunning;
-            isListeningRef.current = isListening;
-            if (recognitionRunning) {
-              voiceDebug.setStage("speechRecognition", "working");
-            } else {
-              voiceDebug.setStage("speechRecognition", "idle");
-            }
-          },
-        });
-      } else {
-        recognitionManagerRef.current.updateLanguage(language);
-      }
-
-      if (!recognitionManagerRef.current.initialize()) {
+      if (!SpeechRecognitionAPI) {
         voiceDebug.error("SpeechRecognition not supported", "speechRecognition");
-        throw new Error(recognitionUnavailableMessage());
+        throw new Error("Speech recognition not supported in this browser. Try Chrome or Edge.");
       }
+
+      const recognition = new SpeechRecognitionAPI();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = language === "ta" ? "ta-IN" : "en-IN";
+
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let interim = "";
+        let final = "";
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) final += transcript;
+          else interim += transcript;
+        }
+
+        if (interim) {
+          setUserTranscript(interim);
+          setStatus("listening");
+          voiceDebug.setStage("speechRecognition", "working");
+          if (isSpeakingRef.current) {
+            window.speechSynthesis?.cancel();
+            isSpeakingRef.current = false;
+          }
+        }
+
+        if (final.trim() && !isSpeakingRef.current && !isProcessingRef.current) {
+          processUserInput(final.trim());
+        }
+      };
+
+      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        if (event.error === "not-allowed") {
+          voiceDebug.error("Microphone permission denied", "microphone");
+          setError("Microphone permission denied. Please allow microphone access and reload.");
+        } else if (event.error !== "no-speech" && event.error !== "aborted") {
+          voiceDebug.log(`SpeechRecognition: ${event.error}`);
+        }
+      };
+
+      recognition.onend = () => {
+        const { conversationContext } = useVoiceStore.getState();
+        if (
+          recognitionRef.current &&
+          conversationContext.state !== "SESSION_CLOSED"
+        ) {
+          try { recognitionRef.current.start(); } catch { /* already running */ }
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
 
       voiceDebug.setStage("microphone", "working");
-      voiceDebug.setStage("speechRecognition", "idle");
+      voiceDebug.setStage("speechRecognition", "working");
+      setStatus("listening");
 
       const { messages, conversationContext } = useVoiceStore.getState();
       const shouldGreet = !conversationContext.greeted && messages.length === 0;
@@ -680,20 +541,12 @@ export function useFallbackVoice() {
           currentStep: "classify",
           currentWorkflow: null,
         });
-        // Speak greeting BEFORE starting microphone — prevents echo of greeting
         await speak(greeting);
-      } else {
-        await startListening();
       }
 
       return true;
     } catch (err) {
-      const msg =
-        err instanceof Error && err.message === "PERMISSION_DENIED"
-          ? permissionDeniedMessage()
-          : err instanceof Error
-            ? err.message
-            : "Connection failed";
+      const msg = err instanceof Error ? err.message : "Connection failed";
       voiceDebug.error(msg, "speechRecognition");
       setError(msg);
       setStatus("error");
@@ -703,45 +556,73 @@ export function useFallbackVoice() {
     addMessage,
     language,
     processUserInput,
-    scheduleSilenceFlush,
     setConversationContext,
     setDemoMode,
+    setEmergency,
     setError,
     setHasActiveSession,
     setMode,
     setSessionId,
+    setStatus,
+    setUserTranscript,
     speak,
-    startListening,
-    handleRecognitionError,
   ]);
 
   const disconnect = useCallback(() => {
-    continuousModeRef.current = false;
-    clearSilenceTimer();
-    void recognitionManagerRef.current?.destroy();
-    recognitionManagerRef.current = null;
-    releaseMicrophoneStream(micStreamRef.current);
-    micStreamRef.current = null;
+    const { callStartTime } = useVoiceStore.getState();
+    if (callStartTime) {
+      analytics.trackCallDuration(Math.round((Date.now() - callStartTime) / 1000));
+    }
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
     window.speechSynthesis?.cancel();
     isSpeakingRef.current = false;
     isProcessingRef.current = false;
-    isListeningRef.current = false;
-    recognitionRunningRef.current = false;
-    sessionTranscriptRef.current = "";
-    recognitionRetryRef.current = false;
-    lastSpokenRef.current = "";
     setStatus("disconnected");
     voiceDebug.reset();
-  }, [clearSilenceTimer, setStatus]);
-
-  useEffect(() => () => disconnect(), [disconnect]);
+  }, [setStatus]);
 
   useEffect(() => {
-    setMicrophoneEnabled(
-      micStreamRef.current,
-      !isMuted && !isSpeakingRef.current && !isProcessingRef.current
-    );
-  }, [isMuted]);
+    const interval = setInterval(() => {
+      const store = useVoiceStore.getState();
+      if (store.status === "disconnected" || store.status === "error") return;
+      if (Date.now() - lastActivityRef.current < IDLE_TIMEOUT_MS) return;
+
+      const timeoutMsg =
+        store.language === "ta"
+          ? "செயலற்ற தன்மை காரணமாக session முடிந்தது. மீண்டும் தொடங்க Restart அழுத்தவும்."
+          : "Session ended due to inactivity. Press Restart if you need further assistance.";
+
+      analytics.trackDropOff(store.conversationContext.currentStep ?? "idle");
+      setConversationContext({
+        ...store.conversationContext,
+        state: "SESSION_CLOSED",
+        workflowStatus: "closed",
+        currentStep: "closed",
+        currentWorkflow: null,
+      });
+      setAiTranscript(timeoutMsg);
+      addMessage({
+        role: "assistant",
+        content: timeoutMsg,
+        timestamp: new Date().toISOString(),
+      });
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {
+          // ignore
+        }
+      }
+      setStatus("disconnected");
+    }, 30_000);
+
+    return () => clearInterval(interval);
+  }, [addMessage, setAiTranscript, setConversationContext, setStatus]);
+
+  useEffect(() => () => disconnect(), [disconnect]);
 
   return { connect, disconnect };
 }

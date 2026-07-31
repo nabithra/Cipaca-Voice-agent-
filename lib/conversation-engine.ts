@@ -90,8 +90,6 @@ function stateForStep(step: WorkflowStep): ConversationContext["state"] {
     ask_name: "COLLECTING_NAME",
     ask_phone: "COLLECTING_PHONE",
     ask_location: "COLLECTING_LOCATION",
-    ask_emergency_type: "EMERGENCY",
-    ask_travelling: "COLLECTING_TIME",
     ask_department: "COLLECTING_DEPARTMENT",
     ask_doctor: "COLLECTING_DOCTOR",
     ask_date: "COLLECTING_DATE",
@@ -118,17 +116,11 @@ function questionForStep(step: WorkflowStep, ctx: ConversationContext): string {
         lang
       );
     case "ask_location":
-      return t("What is the patient location or address?", "நோயாளியின் இருப்பிடம் எங்கே?", lang);
-    case "ask_emergency_type":
-      return t(
-        "What is the nature of the emergency?",
-        "Emergency-ன் வகை என்ன?",
-        lang
-      );
+      return t("What is your location or address?", "உங்கள் இருப்பிடம் எங்கே?", lang);
     case "ask_travelling":
       return t(
-        "Is the patient already travelling to the hospital? Please say Yes or No.",
-        "நோயாளி hospital-க்கு வந்து கொண்டிருக்கிறாரா? ஆம் அல்லது இல்லை?",
+        "Are you currently travelling to the hospital?",
+        "நீங்கள் hospital-க்கு வந்து கொண்டிருக்கிறீர்களா?",
         lang
       );
     case "ask_department":
@@ -149,13 +141,7 @@ function appointmentSteps(): WorkflowStep[] {
 }
 
 function emergencySteps(): WorkflowStep[] {
-  return [
-    "ask_name",
-    "ask_phone",
-    "ask_location",
-    "ask_emergency_type",
-    "ask_travelling",
-  ];
+  return ["ask_name", "ask_phone", "ask_location", "ask_travelling"];
 }
 
 function getNextStep(workflow: WorkflowType, current: WorkflowStep): WorkflowStep | null {
@@ -164,49 +150,6 @@ function getNextStep(workflow: WorkflowType, current: WorkflowStep): WorkflowSte
   const idx = steps.indexOf(current);
   if (idx === -1) return steps[0] ?? null;
   return steps[idx + 1] ?? null;
-}
-
-function stepFieldKey(step: WorkflowStep): string {
-  const raw = step.replace("ask_", "");
-  if (raw === "emergency_type") return "emergencyType";
-  if (raw === "travelling") return "isTravelling";
-  return raw;
-}
-
-function fieldFilled(ctx: ConversationContext, step: WorkflowStep): boolean {
-  switch (step) {
-    case "ask_name":
-      return !!ctx.name;
-    case "ask_phone":
-      return !!ctx.phone;
-    case "ask_location":
-      return !!ctx.location;
-    case "ask_emergency_type":
-      return !!ctx.emergencyType;
-    case "ask_travelling":
-      return ctx.isTravelling !== undefined;
-    case "ask_department":
-      return !!ctx.department;
-    case "ask_doctor":
-      return !!ctx.doctor;
-    case "ask_date":
-      return !!ctx.preferredDate;
-    case "ask_time":
-      return !!ctx.preferredTime;
-    default:
-      return false;
-  }
-}
-
-function getNextUnfilledStep(
-  workflow: WorkflowType,
-  ctx: ConversationContext
-): WorkflowStep | null {
-  const steps = workflow === "appointment" ? appointmentSteps() : emergencySteps();
-  for (const step of steps) {
-    if (!fieldFilled(ctx, step)) return step;
-  }
-  return null;
 }
 
 function storeStepAnswer(ctx: ConversationContext, text: string): ConversationContext {
@@ -218,16 +161,15 @@ function storeStepAnswer(ctx: ConversationContext, text: string): ConversationCo
       return { ...ctx, phone: trimmed };
     case "ask_location":
       return { ...ctx, location: trimmed };
-    case "ask_emergency_type":
-      return { ...ctx, emergencyType: trimmed };
     case "ask_travelling":
-      if (TRAVELLING_YES.test(trimmed) || /on the way|coming to|heading to/i.test(trimmed)) {
-        return { ...ctx, isTravelling: true };
-      }
-      if (TRAVELLING_NO.test(trimmed) || /already here|at the hospital|at hospital/i.test(trimmed)) {
-        return { ...ctx, isTravelling: false };
-      }
-      return ctx;
+      return {
+        ...ctx,
+        isTravelling: TRAVELLING_YES.test(trimmed)
+          ? true
+          : TRAVELLING_NO.test(trimmed)
+            ? false
+            : /yes|travel|way|coming/i.test(trimmed),
+      };
     case "ask_department":
       return { ...ctx, department: trimmed };
     case "ask_doctor":
@@ -255,7 +197,6 @@ export function getWorkflowDebugInfo(ctx: ConversationContext): WorkflowDebugInf
   if (ctx.preferredDate) collected.preferredDate = ctx.preferredDate;
   if (ctx.preferredTime) collected.preferredTime = ctx.preferredTime;
   if (ctx.location) collected.location = ctx.location;
-  if (ctx.emergencyType) collected.emergencyType = ctx.emergencyType;
   if (ctx.isTravelling !== undefined) collected.isTravelling = ctx.isTravelling;
 
   const missing: string[] = [];
@@ -266,8 +207,8 @@ export function getWorkflowDebugInfo(ctx: ConversationContext): WorkflowDebugInf
     }
   } else if (ctx.currentWorkflow === "emergency") {
     for (const step of emergencySteps()) {
-      const key = stepFieldKey(step);
-      if (collected[key] === undefined) missing.push(key);
+      const field = step.replace("ask_", "");
+      if (collected[field] === undefined && field !== "travelling") missing.push(field);
     }
   }
 
@@ -317,30 +258,34 @@ function startWorkflow(
   };
 }
 
-function handleActiveWorkflow(
-  ctx: ConversationContext,
-  text: string,
-  isDemoMode = false
-): EngineResult {
+function isValidPhoneInput(text: string): boolean {
+  const digits = text.replace(/\D/g, "");
+  return digits.length >= 10;
+}
+
+function handleActiveWorkflow(ctx: ConversationContext, text: string): EngineResult {
   const workflow = ctx.currentWorkflow!;
 
-  const updated = storeStepAnswer(ctx, text);
-
-  if (!fieldFilled(updated, ctx.currentStep)) {
+  if (ctx.currentStep === "ask_phone" && !isValidPhoneInput(text)) {
     return {
-      reply: questionForStep(ctx.currentStep, updated),
-      context: { ...updated, currentStep: ctx.currentStep, state: stateForStep(ctx.currentStep) },
+      reply: t(
+        "Could you please repeat your mobile number? I need at least 10 digits.",
+        "தயவுசெய்து உங்கள் mobile number-ஐ மீண்டும் சொல்லுங்கள். குறைந்தது 10 இலக்கங்கள் தேவை.",
+        ctx.language
+      ),
+      context: ctx,
     };
   }
 
-  const nextStep = getNextUnfilledStep(workflow, updated);
+  const updated = storeStepAnswer(ctx, text);
+  const nextStep = getNextStep(workflow, ctx.currentStep);
 
   if (!nextStep) {
     if (workflow === "appointment" && !updated.appointmentSaved) {
       return buildAppointmentComplete(updated);
     }
     if (workflow === "emergency") {
-      return buildEmergencyComplete(updated, isDemoMode);
+      return buildEmergencyComplete(updated);
     }
   }
 
@@ -356,12 +301,10 @@ function handleActiveWorkflow(
 
 export function processConversationTurn(
   userMessage: string,
-  ctx: ConversationContext,
-  options?: { isDemoMode?: boolean }
+  ctx: ConversationContext
 ): EngineResult {
   const text = userMessage.trim();
   const lang = ctx.language;
-  const isDemoMode = options?.isDemoMode ?? false;
 
   if (ctx.state === "SESSION_CLOSED" || ctx.workflowStatus === "closed") {
     return {
@@ -408,7 +351,7 @@ export function processConversationTurn(
 
   // ACTIVE WORKFLOW — never re-classify intent
   if (ctx.workflowStatus === "active" && ctx.currentWorkflow) {
-    return handleActiveWorkflow(ctx, text, isDemoMode);
+    return handleActiveWorkflow(ctx, text);
   }
 
   // No active workflow — classify intent once
@@ -433,7 +376,7 @@ export function processConversationTurn(
       "emergency",
       "emergency",
       t(
-        "I understand this may be an emergency. Please stay calm. May I know your name?",
+        "I understand this may be an emergency. Please stay calm. What is your name?",
         "இது emergency ஆக இருக்கலாம். அமைதியாக இருங்கள். உங்கள் பெயர் என்ன?",
         lang
       )
@@ -471,27 +414,22 @@ export function processConversationTurn(
   };
 }
 
-function buildEmergencyComplete(ctx: ConversationContext, isDemoMode = false): EngineResult {
+function buildEmergencyComplete(ctx: ConversationContext): EngineResult {
   const lang = ctx.language;
   const ticketId = `EMG-${Math.floor(100000 + Math.random() * 900000)}`;
 
-  const handoffEn = `Emergency ticket ${ticketId} has been created. Our emergency team has been notified. Please stay on the line while we connect you to a GRE executive.${
-    isDemoMode
-      ? " Demo Mode: Human transfer is simulated. GRE Executive would receive this emergency call."
-      : ""
-  }`;
-  const handoffTa = `Emergency ticket ${ticketId} பதிவு செய்யப்பட்டது. Emergency team-க்கு தெரிவிக்கப்பட்டது. GRE executive-ஐ connect செய்கிறோம்.${
-    isDemoMode ? " Demo Mode: Human transfer simulated." : ""
-  }`;
-
   return {
-    reply: t(handoffEn, handoffTa, lang),
+    reply: t(
+      `Emergency details recorded. Ticket ID: ${ticketId}. Our emergency team and GRE have been notified. Is there anything else I can help you with?`,
+      `Emergency பதிவு செய்யப்பட்டது. Ticket ID: ${ticketId}. Emergency team-க்கு தெரிவிக்கப்பட்டது. வேறு உதவி வேண்டுமா?`,
+      lang
+    ),
     context: {
       ...ctx,
       state: "COMPLETED",
       workflowStatus: "completed",
       currentStep: "anything_else",
-      awaitingAnythingElse: false,
+      awaitingAnythingElse: true,
       referenceId: ticketId,
       summary: `Emergency: ${ctx.name} at ${ctx.location}`,
     },

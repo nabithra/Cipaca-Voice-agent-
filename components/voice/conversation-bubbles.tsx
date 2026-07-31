@@ -20,6 +20,10 @@ export function ConversationBubbles({
 }: ConversationBubbleProps) {
   return (
     <div className={cn("flex flex-col gap-3 overflow-y-auto", className)}>
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {messages.length > 0 ? messages[messages.length - 1].content : ""}
+        {isProcessing ? " Assistant is typing." : ""}
+      </div>
       {messages.map((msg, i) => (
         <motion.div
           key={`${msg.timestamp}-${i}`}

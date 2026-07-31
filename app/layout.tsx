@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/providers/theme-provider";
+import { HtmlLangProvider } from "@/components/providers/html-lang-provider";
 import { Navbar } from "@/components/layout/navbar";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -11,14 +12,6 @@ export const metadata: Metadata = {
   description:
     "AI-powered centralized hospital helpline for CIPACA Hospital. Voice assistant supporting Tamil and English.",
   keywords: ["CIPACA", "hospital", "voice assistant", "AI", "healthcare"],
-};
-
-export const viewport = {
-  width: "device-width",
-  initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-  viewportFit: "cover" as const,
 };
 
 export default function RootLayout({
@@ -35,8 +28,10 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <Navbar />
-          <main>{children}</main>
+          <HtmlLangProvider>
+            <Navbar />
+            <main>{children}</main>
+          </HtmlLangProvider>
         </ThemeProvider>
       </body>
     </html>

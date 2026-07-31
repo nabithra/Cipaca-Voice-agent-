@@ -139,7 +139,7 @@ export async function saveEmergency(input: EmergencyInput): Promise<{
   error?: string;
 }> {
   try {
-    const ticketId = input.referenceId ?? generateTicketId();
+    const ticketId = generateTicketId();
     const gre = GRE_TEAM.find((g) => g.line === "emergency" && g.status !== "offline");
 
     const lead = await createLead({
