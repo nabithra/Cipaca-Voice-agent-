@@ -99,6 +99,31 @@ class VoiceDebugBus {
 
 export const voiceDebug = new VoiceDebugBus();
 
+/** Returns true if transcript likely echoes the last assistant utterance (mic picked up TTS). */
+export function isLikelyAssistantEcho(transcript: string, assistantText: string): boolean {
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+  const t = normalize(transcript);
+  const a = normalize(assistantText);
+  if (!t || !a) return false;
+  if (t === a) return true;
+  if (a.includes(t) && t.length >= 8) return true;
+  if (t.includes(a) && a.length >= 8) return true;
+  const tWords = t.split(" ").filter(Boolean);
+  if (tWords.length < 3) return false;
+  const aWords = new Set(a.split(" ").filter(Boolean));
+  const overlap = tWords.filter((w) => aWords.has(w)).length / tWords.length;
+  return overlap >= 0.65;
+}
+
+export const MIC_CONSTRAINTS: MediaStreamConstraints = {
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  },
+};
+
 export async function speakText(
   text: string,
   language: Language,
@@ -108,7 +133,8 @@ export async function speakText(
   if (isMuted || !text.trim()) return "skipped";
 
   voiceDebug.setStage("tts", "loading");
-  voiceDebug.log(`TTS: speaking "${text.slice(0, 60)}..."`);
+  voiceDebug.log(`Speaking: "${text.slice(0, 60)}..."`);
+  console.log("[CIPACA] Speaking:", text.slice(0, 120));
 
   if (!options?.demoMode) {
     try {
@@ -174,7 +200,10 @@ function speakWithBrowser(text: string, language: Language): Promise<void> {
     utterance.rate = 0.95;
     utterance.pitch = 1;
 
-    utterance.onend = () => resolve();
+    utterance.onend = () => {
+      console.log("[CIPACA] Speaking finished (browser TTS)");
+      resolve();
+    };
     utterance.onerror = (e) => reject(new Error(e.error ?? "speechSynthesis error"));
 
     // Voices may load async

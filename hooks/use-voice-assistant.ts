@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useVoiceStore, saveLeadToLocalStorage } from "@/lib/store";
 import { useLeadStore } from "@/lib/store";
 import { useToolHandler } from "@/hooks/use-tool-handler";
-import { speakText, fetchWithRetry, voiceDebug } from "@/lib/voice-client";
+import { speakText, fetchWithRetry, voiceDebug, isLikelyAssistantEcho, MIC_CONSTRAINTS } from "@/lib/voice-client";
 import { getLocalGreeting } from "@/lib/local-assistant";
 import type { ConversationContext, ConversationMessage, Lead } from "@/types";
 
@@ -163,7 +163,7 @@ export function useRealtimeVoice() {
       };
 
       voiceDebug.setStage("microphone", "loading");
-      const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ms = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
       voiceDebug.setStage("microphone", "working");
       pc.addTrack(ms.getTracks()[0]);
 
@@ -226,6 +226,8 @@ export function useFallbackVoice() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const isSpeakingRef = useRef(false);
   const isProcessingRef = useRef(false);
+  const isListeningRef = useRef(false);
+  const lastSpokenRef = useRef("");
   const { handleToolCall } = useToolHandler();
   const { addLead } = useLeadStore();
 
@@ -245,36 +247,71 @@ export function useFallbackVoice() {
     setEmergency,
   } = useVoiceStore();
 
-  const resumeListening = useCallback(() => {
+  const stopListening = useCallback(() => {
     if (!recognitionRef.current) return;
     try {
-      recognitionRef.current.start();
-      setStatus("listening");
+      recognitionRef.current.stop();
     } catch {
-      // already running
+      // already stopped
+    }
+    isListeningRef.current = false;
+    voiceDebug.setStage("speechRecognition", "idle");
+    voiceDebug.log("Listening Stopped");
+    console.log("[CIPACA] Listening Stopped");
+  }, []);
+
+  const startListening = useCallback(() => {
+    if (!recognitionRef.current) return;
+    if (isSpeakingRef.current || isProcessingRef.current) return;
+    if (useVoiceStore.getState().conversationContext.state === "SESSION_CLOSED") return;
+
+    try {
+      recognitionRef.current.start();
+      isListeningRef.current = true;
+      setStatus("listening");
+      voiceDebug.setStage("speechRecognition", "working");
+      voiceDebug.log("Listening Started");
+      console.log("[CIPACA] Listening Started");
+    } catch {
+      // recognition may already be running; treat as listening
+      isListeningRef.current = true;
+      setStatus("listening");
     }
   }, [setStatus]);
 
   const speak = useCallback(
     async (text: string) => {
       if (isMuted || !text.trim()) return;
+
       isSpeakingRef.current = true;
+      stopListening();
+      lastSpokenRef.current = text;
       setStatus("speaking");
+      setUserTranscript("");
+      voiceDebug.log(`Speaking: "${text.slice(0, 60)}..."`);
+      console.log("[CIPACA] Speaking:", text.slice(0, 120));
+
       try {
         const demoMode = useVoiceStore.getState().isDemoMode;
         await speakText(text, language, isMuted, { demoMode });
       } finally {
         isSpeakingRef.current = false;
-        setStatus("listening");
-        resumeListening();
+        voiceDebug.setStage("speaker", "idle");
+        console.log("[CIPACA] Speaking finished");
+        if (!isProcessingRef.current) {
+          startListening();
+        }
       }
     },
-    [isMuted, language, resumeListening, setStatus]
+    [isMuted, language, startListening, stopListening, setStatus, setUserTranscript]
   );
 
   const processUserInput = useCallback(
-    async (text: string) => {
-      if (isProcessingRef.current) return;
+    async (recognizedTranscript: string) => {
+      if (isProcessingRef.current || isSpeakingRef.current) return;
+
+      const text = recognizedTranscript.trim();
+      if (!text) return;
 
       const store = useVoiceStore.getState();
       if (store.conversationContext.state === "SESSION_CLOSED") {
@@ -282,22 +319,34 @@ export function useFallbackVoice() {
         return;
       }
 
+      // Reject echo of assistant's own TTS
+      const lastAssistant = [...store.messages]
+        .reverse()
+        .find((m) => m.role === "assistant");
+      if (
+        (lastSpokenRef.current && isLikelyAssistantEcho(text, lastSpokenRef.current)) ||
+        (lastAssistant && isLikelyAssistantEcho(text, lastAssistant.content))
+      ) {
+        voiceDebug.log(`Ignored assistant echo: "${text.slice(0, 60)}"`);
+        console.log("[CIPACA] Ignored echo (assistant audio):", text);
+        return;
+      }
+
+      stopListening();
       isProcessingRef.current = true;
 
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
-      isSpeakingRef.current = false;
+      console.log("[CIPACA] Recognized Transcript:", text);
+      voiceDebug.log(`Recognized Transcript: "${text}"`);
 
       setUserTranscript(text);
       voiceDebug.setStage("transcript", "working");
-      voiceDebug.log(`User said: "${text}"`);
 
       const userMsg: ConversationMessage = {
         role: "user",
         content: text,
         timestamp: new Date().toISOString(),
       };
+      console.log("[CIPACA] Outgoing User Message:", text);
       addMessage(userMsg);
 
       const priorMessages = useVoiceStore.getState().messages;
@@ -334,7 +383,8 @@ export function useFallbackVoice() {
         voiceDebug.setStage("openaiRequest", "working");
         voiceDebug.setStage("openaiResponse", "working");
         voiceDebug.setApiSource(source === "openai" ? "openai" : "local");
-        voiceDebug.log(`AI (${source}): "${responseText.slice(0, 80)}..."`);
+        console.log("[CIPACA] AI Response:", responseText);
+        voiceDebug.log(`AI Response: "${responseText.slice(0, 80)}..."`);
 
         if (result.data.conversationContext) {
           setConversationContext(result.data.conversationContext);
@@ -364,7 +414,7 @@ export function useFallbackVoice() {
         voiceDebug.setApiSource("local");
 
         responseText = "I'm here to help. Could you please repeat that?";
-        voiceDebug.log(`Using fallback response: "${responseText.slice(0, 80)}"`);
+        console.log("[CIPACA] AI Response (fallback):", responseText);
         voiceDebug.setStage("openaiResponse", "fallback");
       }
 
@@ -377,7 +427,9 @@ export function useFallbackVoice() {
 
       await speak(responseText);
       setUserTranscript("");
+      setAiTranscript("");
       isProcessingRef.current = false;
+      startListening();
     },
     [
       addLead,
@@ -390,6 +442,8 @@ export function useFallbackVoice() {
       setStatus,
       setUserTranscript,
       speak,
+      startListening,
+      stopListening,
     ]
   );
 
@@ -434,6 +488,11 @@ export function useFallbackVoice() {
       recognition.lang = language === "ta" ? "ta-IN" : "en-IN";
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
+        // Never process mic input while assistant is speaking or pipeline is busy
+        if (isSpeakingRef.current || isProcessingRef.current) {
+          return;
+        }
+
         let interim = "";
         let final = "";
 
@@ -445,15 +504,10 @@ export function useFallbackVoice() {
 
         if (interim) {
           setUserTranscript(interim);
-          setStatus("listening");
           voiceDebug.setStage("speechRecognition", "working");
-          if (isSpeakingRef.current) {
-            window.speechSynthesis?.cancel();
-            isSpeakingRef.current = false;
-          }
         }
 
-        if (final.trim() && !isSpeakingRef.current && !isProcessingRef.current) {
+        if (final.trim()) {
           processUserInput(final.trim());
         }
       };
@@ -468,21 +522,22 @@ export function useFallbackVoice() {
       };
 
       recognition.onend = () => {
-        const { conversationContext } = useVoiceStore.getState();
+        isListeningRef.current = false;
+        // Only auto-restart when idle — never during TTS or AI processing
         if (
           recognitionRef.current &&
-          conversationContext.state !== "SESSION_CLOSED"
+          !isSpeakingRef.current &&
+          !isProcessingRef.current &&
+          useVoiceStore.getState().conversationContext.state !== "SESSION_CLOSED"
         ) {
-          try { recognitionRef.current.start(); } catch { /* already running */ }
+          window.setTimeout(() => startListening(), 250);
         }
       };
 
       recognitionRef.current = recognition;
-      recognition.start();
 
       voiceDebug.setStage("microphone", "working");
-      voiceDebug.setStage("speechRecognition", "working");
-      setStatus("listening");
+      voiceDebug.setStage("speechRecognition", "idle");
 
       const { messages, conversationContext } = useVoiceStore.getState();
       const shouldGreet = !conversationContext.greeted && messages.length === 0;
@@ -503,7 +558,10 @@ export function useFallbackVoice() {
           currentStep: "classify",
           currentWorkflow: null,
         });
+        // Speak greeting BEFORE starting microphone — prevents echo of greeting
         await speak(greeting);
+      } else {
+        startListening();
       }
 
       return true;
@@ -520,27 +578,27 @@ export function useFallbackVoice() {
     processUserInput,
     setConversationContext,
     setDemoMode,
-    setEmergency,
     setError,
     setHasActiveSession,
     setMode,
     setSessionId,
-    setStatus,
-    setUserTranscript,
     speak,
+    startListening,
   ]);
 
   const disconnect = useCallback(() => {
+    stopListening();
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
       recognitionRef.current = null;
     }
     window.speechSynthesis?.cancel();
     isSpeakingRef.current = false;
     isProcessingRef.current = false;
+    isListeningRef.current = false;
+    lastSpokenRef.current = "";
     setStatus("disconnected");
     voiceDebug.reset();
-  }, [setStatus]);
+  }, [setStatus, stopListening]);
 
   useEffect(() => () => disconnect(), [disconnect]);
 
