@@ -258,24 +258,8 @@ function startWorkflow(
   };
 }
 
-function isValidPhoneInput(text: string): boolean {
-  const digits = text.replace(/\D/g, "");
-  return digits.length >= 10;
-}
-
 function handleActiveWorkflow(ctx: ConversationContext, text: string): EngineResult {
   const workflow = ctx.currentWorkflow!;
-
-  if (ctx.currentStep === "ask_phone" && !isValidPhoneInput(text)) {
-    return {
-      reply: t(
-        "Could you please repeat your mobile number? I need at least 10 digits.",
-        "தயவுசெய்து உங்கள் mobile number-ஐ மீண்டும் சொல்லுங்கள். குறைந்தது 10 இலக்கங்கள் தேவை.",
-        ctx.language
-      ),
-      context: ctx,
-    };
-  }
 
   const updated = storeStepAnswer(ctx, text);
   const nextStep = getNextStep(workflow, ctx.currentStep);

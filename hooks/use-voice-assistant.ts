@@ -1,15 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { useVoiceStore, saveLeadToLocalStorage, syncDraftLeadToStores, syncNotificationForLead } from "@/lib/store";
-import { useLeadStore, useNotificationStore } from "@/lib/store";
+import { useVoiceStore, saveLeadToLocalStorage } from "@/lib/store";
+import { useLeadStore } from "@/lib/store";
 import { useToolHandler } from "@/hooks/use-tool-handler";
 import { speakText, fetchWithRetry, voiceDebug } from "@/lib/voice-client";
 import { getLocalGreeting } from "@/lib/local-assistant";
 import type { ConversationContext, ConversationMessage, Lead } from "@/types";
-import { analytics } from "@/lib/analytics";
-
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface RealtimeEvent {
   type: string;
@@ -231,9 +228,6 @@ export function useFallbackVoice() {
   const isProcessingRef = useRef(false);
   const { handleToolCall } = useToolHandler();
   const { addLead } = useLeadStore();
-  const { addNotification } = useNotificationStore();
-  const lastActivityRef = useRef(Date.now());
-  const sessionStartedRef = useRef(false);
 
   const {
     language,
@@ -289,7 +283,6 @@ export function useFallbackVoice() {
       }
 
       isProcessingRef.current = true;
-      lastActivityRef.current = Date.now();
 
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel();
@@ -345,45 +338,19 @@ export function useFallbackVoice() {
 
         if (result.data.conversationContext) {
           setConversationContext(result.data.conversationContext);
-          const updatedCtx = result.data.conversationContext;
-          const allMessages = [
-            ...priorMessages,
-            userMsg,
-            {
-              role: "assistant" as const,
-              content: responseText,
-              timestamp: new Date().toISOString(),
-            },
-          ];
-          syncDraftLeadToStores(
-            updatedCtx,
-            allMessages,
-            lang,
-            sessionId ?? `session-${Date.now()}`,
-            addLead
-          );
         }
 
         if (result.data.savedLead) {
           addLead(result.data.savedLead);
-          const saved = saveLeadToLocalStorage(result.data.savedLead);
-          syncNotificationForLead(result.data.savedLead, addNotification);
+          saveLeadToLocalStorage(result.data.savedLead);
           if (result.data.savedLead.category === "Emergency") {
-            analytics.trackCompletion("emergency");
             setEmergency(
               true,
               result.data.savedLead.ticketId ??
                 result.data.savedLead.referenceId ??
                 undefined
             );
-          } else if (result.data.savedLead.category === "Appointment") {
-            analytics.trackCompletion("appointment");
           }
-          if (!saved) {
-            setError("Lead saved in memory but local storage failed. Check browser settings.");
-          }
-        } else if (result.data.conversationContext?.workflowStatus === "closed") {
-          analytics.trackDropOff(result.data.conversationContext.currentStep ?? "closed");
         }
 
         if (result.data.toolCalls?.length) {
@@ -414,7 +381,6 @@ export function useFallbackVoice() {
     },
     [
       addLead,
-      addNotification,
       addMessage,
       handleToolCall,
       setAiTranscript,
@@ -439,10 +405,6 @@ export function useFallbackVoice() {
       }
       if (!store.hasActiveSession) {
         setHasActiveSession(true);
-      }
-      if (!sessionStartedRef.current) {
-        sessionStartedRef.current = true;
-        analytics.trackSessionStart();
       }
       useVoiceStore.getState().setCallStartTime(Date.now());
 
@@ -569,10 +531,6 @@ export function useFallbackVoice() {
   ]);
 
   const disconnect = useCallback(() => {
-    const { callStartTime } = useVoiceStore.getState();
-    if (callStartTime) {
-      analytics.trackCallDuration(Math.round((Date.now() - callStartTime) / 1000));
-    }
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
@@ -583,44 +541,6 @@ export function useFallbackVoice() {
     setStatus("disconnected");
     voiceDebug.reset();
   }, [setStatus]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const store = useVoiceStore.getState();
-      if (store.status === "disconnected" || store.status === "error") return;
-      if (Date.now() - lastActivityRef.current < IDLE_TIMEOUT_MS) return;
-
-      const timeoutMsg =
-        store.language === "ta"
-          ? "செயலற்ற தன்மை காரணமாக session முடிந்தது. மீண்டும் தொடங்க Restart அழுத்தவும்."
-          : "Session ended due to inactivity. Press Restart if you need further assistance.";
-
-      analytics.trackDropOff(store.conversationContext.currentStep ?? "idle");
-      setConversationContext({
-        ...store.conversationContext,
-        state: "SESSION_CLOSED",
-        workflowStatus: "closed",
-        currentStep: "closed",
-        currentWorkflow: null,
-      });
-      setAiTranscript(timeoutMsg);
-      addMessage({
-        role: "assistant",
-        content: timeoutMsg,
-        timestamp: new Date().toISOString(),
-      });
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {
-          // ignore
-        }
-      }
-      setStatus("disconnected");
-    }, 30_000);
-
-    return () => clearInterval(interval);
-  }, [addMessage, setAiTranscript, setConversationContext, setStatus]);
 
   useEffect(() => () => disconnect(), [disconnect]);
 

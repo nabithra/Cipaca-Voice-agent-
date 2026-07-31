@@ -19,13 +19,6 @@ export function LanguageSelector({ onStart }: LanguageSelectorProps) {
     setLanguageSelected(true);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent, lang: Language) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      selectLanguage(lang);
-    }
-  };
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -40,16 +33,12 @@ export function LanguageSelector({ onStart }: LanguageSelectorProps) {
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 w-full max-w-md" role="listbox" aria-label="Language selection">
+      <div className="grid gap-4 sm:grid-cols-2 w-full max-w-md">
         <Card
-          role="option"
-          tabIndex={0}
-          aria-selected={language === "en"}
-          className={`glass-card cursor-pointer transition-all hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-primary ${
+          className={`glass-card cursor-pointer transition-all hover:shadow-lg ${
             language === "en" ? "ring-2 ring-primary" : ""
           }`}
           onClick={() => selectLanguage("en")}
-          onKeyDown={(e) => handleKeyDown(e, "en")}
         >
           <CardContent className="p-6 text-center">
             <p className="text-3xl font-bold mb-2">1</p>
@@ -59,14 +48,10 @@ export function LanguageSelector({ onStart }: LanguageSelectorProps) {
         </Card>
 
         <Card
-          role="option"
-          tabIndex={0}
-          aria-selected={language === "ta"}
-          className={`glass-card cursor-pointer transition-all hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-primary ${
+          className={`glass-card cursor-pointer transition-all hover:shadow-lg ${
             language === "ta" ? "ring-2 ring-primary" : ""
           }`}
           onClick={() => selectLanguage("ta")}
-          onKeyDown={(e) => handleKeyDown(e, "ta")}
         >
           <CardContent className="p-6 text-center">
             <p className="text-3xl font-bold mb-2">2</p>

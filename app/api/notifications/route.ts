@@ -1,14 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getAllNotifications } from "@/lib/notification-storage";
-import { isApiAuthorized } from "@/lib/auth/api-auth";
 
 export const maxDuration = 10;
 
-export async function GET(request: NextRequest) {
-  if (!isApiAuthorized(request)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export async function GET() {
   try {
     const notifications = await getAllNotifications();
     return NextResponse.json(notifications);

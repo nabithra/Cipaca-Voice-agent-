@@ -24,10 +24,6 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useLeadStore, useNotificationStore, ensureNotificationArray } from "@/lib/store";
-import { filterExpiredLeads, getRetentionDays } from "@/lib/retention";
-import { maskPhone, maskName } from "@/lib/pii";
-import { appendAuditLog, getAuditLog } from "@/lib/audit-log";
-import { analytics, getAverageCallDuration } from "@/lib/analytics";
 import {
   computeDashboardStats,
   getCategoryBarData,
@@ -62,63 +58,35 @@ export function DashboardView() {
   const { notifications, setNotifications, hydrate: hydrateNotifications } = useNotificationStore();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<LeadCategory | "all">("all");
-  const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
-  const [showDebug, setShowDebug] = useState(false);
-
-  const toggleReveal = (id: string) => {
-    setRevealedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-    appendAuditLog({
-      action: "view_lead_pii",
-      actor: "dashboard-user",
-      detail: `Viewed PII for lead ${id}`,
-    });
-  };
 
   useEffect(() => {
     hydrate();
     hydrateNotifications();
     Promise.all([
-      fetch("/api/leads").then((r) => (r.ok ? r.json() : [])),
-      fetch("/api/notifications").then((r) => (r.ok ? r.json() : [])),
+      fetch("/api/leads").then((r) => r.json()),
+      fetch("/api/notifications").then((r) => r.json()),
     ])
       .then(([serverLeads, serverNotifications]) => {
-        const currentLeads = useLeadStore.getState().leads;
-        const serverList = Array.isArray(serverLeads) ? serverLeads : [];
-        const merged = [...currentLeads];
-        serverList.forEach((sl: Lead) => {
-          const idx = merged.findIndex((m) => m.id === sl.id);
-          if (idx === -1) {
-            merged.push(sl);
-          } else if (new Date(sl.updatedAt).getTime() > new Date(merged[idx].updatedAt).getTime()) {
-            merged[idx] = sl;
-          }
-        });
-        setLeads(
-          filterExpiredLeads(
+        if (Array.isArray(serverLeads) && serverLeads.length > 0) {
+          const currentLeads = useLeadStore.getState().leads;
+          const merged = [...serverLeads];
+          currentLeads.forEach((l) => {
+            if (!merged.find((m: Lead) => m.id === l.id)) merged.push(l);
+          });
+          setLeads(
             merged.sort(
               (a: Lead, b: Lead) =>
                 new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
             )
-          )
-        );
-
-        const localNotifs = ensureNotificationArray(useNotificationStore.getState().notifications);
-        const serverNotifList = Array.isArray(serverNotifications)
+          );
+        }
+        const notificationList = Array.isArray(serverNotifications)
           ? serverNotifications
           : Array.isArray((serverNotifications as { notifications?: Notification[] })?.notifications)
             ? (serverNotifications as { notifications: Notification[] }).notifications
             : [];
-        const mergedNotifs = [...localNotifs];
-        serverNotifList.forEach((sn: Notification) => {
-          if (!mergedNotifs.find((n) => n.id === sn.id)) mergedNotifs.push(sn);
-        });
-        if (mergedNotifs.length > 0) {
-          setNotifications(mergedNotifs);
+        if (notificationList.length > 0) {
+          setNotifications(notificationList);
         }
       })
       .catch(() => {});
@@ -145,11 +113,6 @@ export function DashboardView() {
   });
 
   const exportJSON = () => {
-    appendAuditLog({
-      action: "export_leads",
-      actor: "dashboard-user",
-      detail: `Exported ${filteredLeads.length} leads`,
-    });
     const blob = new Blob(
       [JSON.stringify({ leads: filteredLeads, notifications }, null, 2)],
       { type: "application/json" }
@@ -161,9 +124,6 @@ export function DashboardView() {
     a.click();
     URL.revokeObjectURL(url);
   };
-
-  const analyticsData = analytics.get();
-  const auditEntries = getAuditLog().slice(0, 5);
 
   const statCards = [
     { title: "Total Calls", value: stats.totalCalls, icon: PhoneCall, color: "text-teal-500" },
@@ -413,29 +373,10 @@ export function DashboardView() {
                           </td>
                         </tr>
                       ) : (
-                        filteredLeads.map((lead) => {
-                          const revealed = revealedIds.has(lead.id);
-                          return (
+                        filteredLeads.map((lead) => (
                           <tr key={lead.id} className="border-b border-border/50 hover:bg-muted/50">
-                            <td className="py-3 px-2 font-medium">
-                              <button
-                                type="button"
-                                className="hover:underline text-left"
-                                onClick={() => toggleReveal(lead.id)}
-                                title={revealed ? "Hide details" : "Click to reveal full name"}
-                              >
-                                {maskName(lead.name, revealed)}
-                              </button>
-                            </td>
-                            <td className="py-3 px-2">
-                              <button
-                                type="button"
-                                className="hover:underline"
-                                onClick={() => toggleReveal(lead.id)}
-                              >
-                                {revealed ? lead.phone || "—" : maskPhone(lead.phone || "")}
-                              </button>
-                            </td>
+                            <td className="py-3 px-2 font-medium">{lead.name}</td>
+                            <td className="py-3 px-2">{lead.phone || "—"}</td>
                             <td className="py-3 px-2">
                               <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
                                 lead.category === "Emergency" ? "bg-red-500/10 text-red-600"
@@ -448,8 +389,7 @@ export function DashboardView() {
                             <td className="py-3 px-2 font-mono text-xs">{lead.referenceId ?? lead.ticketId ?? "—"}</td>
                             <td className="py-3 px-2 text-muted-foreground">{formatDate(lead.createdAt)}</td>
                           </tr>
-                          );
-                        })
+                        ))
                       )}
                     </tbody>
                   </table>
@@ -492,52 +432,6 @@ export function DashboardView() {
               </TabsContent>
             </Tabs>
           </CardContent>
-        </Card>
-
-        <Card className="glass-card">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">Operations & Debug</CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setShowDebug((v) => !v)}>
-              {showDebug ? "Hide" : "Show"}
-            </Button>
-          </CardHeader>
-          {showDebug && (
-            <CardContent className="space-y-4 text-sm">
-              <p className="text-muted-foreground">
-                Data retention: {getRetentionDays()} days · Avg call duration (client): {getAverageCallDuration()}s
-              </p>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="rounded-lg border border-border/50 p-3">
-                  <p className="font-medium mb-2">Session Analytics</p>
-                  <ul className="space-y-1 text-muted-foreground">
-                    <li>Sessions started: {analyticsData.sessionsStarted}</li>
-                    <li>Appointments completed: {analyticsData.appointmentsCompleted}</li>
-                    <li>Emergencies completed: {analyticsData.emergenciesCompleted}</li>
-                    <li>
-                      Drop-offs:{" "}
-                      {Object.entries(analyticsData.dropOffByStep)
-                        .map(([step, count]) => `${step} (${count})`)
-                        .join(", ") || "none"}
-                    </li>
-                  </ul>
-                </div>
-                <div className="rounded-lg border border-border/50 p-3">
-                  <p className="font-medium mb-2">Recent Audit Log</p>
-                  {auditEntries.length === 0 ? (
-                    <p className="text-muted-foreground">No audit entries yet</p>
-                  ) : (
-                    <ul className="space-y-1 text-muted-foreground">
-                      {auditEntries.map((e) => (
-                        <li key={e.id}>
-                          {e.action} — {e.detail} · {formatDate(e.timestamp)}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          )}
         </Card>
       </div>
     </div>

@@ -64,14 +64,6 @@ export type NotificationType =
   | "escalation"
   | "arrival";
 
-export type AuditAction =
-  | "view_dashboard"
-  | "export_leads"
-  | "view_lead"
-  | "view_lead_pii"
-  | "login"
-  | "logout";
-
 export interface ConversationMessage {
   role: "user" | "assistant" | "system";
   content: string;

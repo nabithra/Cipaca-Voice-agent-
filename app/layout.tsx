@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/providers/theme-provider";
-import { HtmlLangProvider } from "@/components/providers/html-lang-provider";
 import { Navbar } from "@/components/layout/navbar";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -28,10 +27,8 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <HtmlLangProvider>
-            <Navbar />
-            <main>{children}</main>
-          </HtmlLangProvider>
+          <Navbar />
+          <main>{children}</main>
         </ThemeProvider>
       </body>
     </html>

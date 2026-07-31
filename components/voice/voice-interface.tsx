@@ -129,13 +129,6 @@ export function VoiceInterface() {
                       demoMode={isDemoMode}
                       className="mb-6"
                     />
-                    <div className="sr-only" aria-live="polite" aria-atomic="true">
-                      {status === "listening" && "Listening for your speech."}
-                      {status === "processing" && "Processing your request."}
-                      {status === "speaking" && "Assistant is speaking."}
-                      {status === "connecting" && "Connecting to voice assistant."}
-                      {status === "error" && error ? `Error: ${error}` : ""}
-                    </div>
 
                     <MicrophoneButton
                       isActive={isActive}

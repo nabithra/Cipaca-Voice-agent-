@@ -1,22 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRealtimeSession } from "@/lib/openai";
-import { isOpenAIConfigured, getRealtimeModel } from "@/lib/openai-config";
-import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
-import { logger } from "@/lib/logger";
+import { isOpenAIConfigured } from "@/lib/openai-config";
 
 export const maxDuration = 10;
 
 export async function POST(request: NextRequest) {
-  const ip = getClientIp(request);
-  const rate = checkRateLimit(`realtime:${ip}`);
-
-  if (!rate.allowed) {
-    return NextResponse.json(
-      { error: "Too many requests. Please try again shortly." },
-      { status: 429, headers: { "Retry-After": "60" } }
-    );
-  }
-
   try {
     if (!isOpenAIConfigured()) {
       return NextResponse.json(
@@ -35,17 +23,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(session);
   } catch (error) {
-    logger.error("realtime session error", {
-      message: error instanceof Error ? error.message : String(error),
-      stack: process.env.NODE_ENV === "development" && error instanceof Error ? error.stack : undefined,
-    });
+    console.error("[Realtime session error]:", error);
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Failed to create realtime session",
-        details:
-          process.env.NODE_ENV === "development" && error instanceof Error
-            ? error.stack
-            : undefined,
+        details: error instanceof Error ? error.stack : undefined,
         fallbackAvailable: true,
       },
       { status: 500 }
@@ -57,6 +39,6 @@ export async function GET() {
   return NextResponse.json({
     available: isOpenAIConfigured(),
     mode: "realtime",
-    model: getRealtimeModel(),
+    model: "gpt-4o-realtime-preview-2024-12-17",
   });
 }

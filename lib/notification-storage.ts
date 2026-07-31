@@ -1,51 +1,74 @@
-import type { Notification } from "@/types";
-import { getStorageAdapter } from "@/lib/storage-adapter";
-import { DEFAULT_KNOWLEDGE_BASE } from "@/lib/knowledge-base";
-import type { KnowledgeBase } from "@/types";
 import { promises as fs } from "fs";
 import path from "path";
+import type { KnowledgeBase, Notification } from "@/types";
+import { generateId } from "@/lib/utils";
+import { DEFAULT_KNOWLEDGE_BASE } from "@/lib/knowledge-base";
 
 const DATA_DIR = path.join(process.cwd(), "data");
+const NOTIFICATIONS_FILE = path.join(DATA_DIR, "notifications.json");
 const KNOWLEDGE_FILE = path.join(DATA_DIR, "knowledge-base.json");
 
-async function readKnowledgeFile(): Promise<KnowledgeBase> {
+async function ensureDataDir(): Promise<void> {
   try {
-    const data = await fs.readFile(KNOWLEDGE_FILE, "utf-8");
-    return JSON.parse(data) as KnowledgeBase;
+    await fs.mkdir(DATA_DIR, { recursive: true });
   } catch {
-    return DEFAULT_KNOWLEDGE_BASE;
+    // exists
   }
 }
 
-async function writeKnowledgeFile(kb: KnowledgeBase): Promise<void> {
+async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(KNOWLEDGE_FILE, JSON.stringify(kb, null, 2), "utf-8");
+    await ensureDataDir();
+    const data = await fs.readFile(filePath, "utf-8");
+    return JSON.parse(data) as T;
   } catch {
-    // read-only on Vercel
+    return fallback;
+  }
+}
+
+async function writeJsonFile<T>(filePath: string, data: T): Promise<void> {
+  try {
+    await ensureDataDir();
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+  } catch {
+    // Vercel serverless has a read-only filesystem; client localStorage is the fallback.
   }
 }
 
 export async function getAllNotifications(): Promise<Notification[]> {
-  return getStorageAdapter().getNotifications();
+  return readJsonFile<Notification[]>(NOTIFICATIONS_FILE, []);
 }
 
 export async function createNotification(
   partial: Omit<Notification, "id" | "createdAt" | "read">
 ): Promise<Notification> {
-  return getStorageAdapter().createNotification(partial);
+  const notifications = await getAllNotifications();
+  const notification: Notification = {
+    id: generateId(),
+    read: false,
+    createdAt: new Date().toISOString(),
+    ...partial,
+  };
+  notifications.unshift(notification);
+  await writeJsonFile(NOTIFICATIONS_FILE, notifications);
+  return notification;
 }
 
 export async function markNotificationRead(id: string): Promise<boolean> {
-  return getStorageAdapter().markNotificationRead(id);
+  const notifications = await getAllNotifications();
+  const index = notifications.findIndex((n) => n.id === id);
+  if (index === -1) return false;
+  notifications[index].read = true;
+  await writeJsonFile(NOTIFICATIONS_FILE, notifications);
+  return true;
 }
 
 export async function getKnowledgeBase(): Promise<KnowledgeBase> {
-  return readKnowledgeFile();
+  return readJsonFile<KnowledgeBase>(KNOWLEDGE_FILE, DEFAULT_KNOWLEDGE_BASE);
 }
 
 export async function saveKnowledgeBase(kb: KnowledgeBase): Promise<void> {
-  await writeKnowledgeFile(kb);
+  await writeJsonFile(KNOWLEDGE_FILE, kb);
 }
 
-export { DATA_DIR };
+export { readJsonFile, writeJsonFile, ensureDataDir, DATA_DIR };

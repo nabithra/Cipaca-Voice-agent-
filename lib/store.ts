@@ -19,11 +19,6 @@ import {
   NOTIFICATIONS_STORAGE_KEY,
   CONVERSATION_STORAGE_KEY,
 } from "@/lib/constants";
-import {
-  buildDraftLead,
-  leadToNotification,
-  logStorageWarning,
-} from "@/lib/client-lead-sync";
 
 interface VoiceStore {
   status: ConnectionStatus;
@@ -257,18 +252,16 @@ export const useNotificationStore = create<NotificationStore>()(
   )
 );
 
-export function saveLeadToLocalStorage(lead: Lead): boolean {
-  if (typeof window === "undefined") return false;
+export function saveLeadToLocalStorage(lead: Lead): void {
+  if (typeof window === "undefined") return;
   try {
     const leads = parseStoredArray<Lead>(localStorage.getItem(STORAGE_KEY), "leads");
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify([lead, ...leads.filter((l) => l.id !== lead.id)])
     );
-    return true;
-  } catch (err) {
-    logStorageWarning("saveLeadToLocalStorage", err);
-    return false;
+  } catch {
+    // ignore
   }
 }
 
@@ -283,31 +276,9 @@ export function saveNotificationToLocalStorage(notification: Notification): void
       NOTIFICATIONS_STORAGE_KEY,
       JSON.stringify([notification, ...list.filter((n) => n.id !== notification.id)])
     );
-  } catch (err) {
-    logStorageWarning("saveNotificationToLocalStorage", err);
+  } catch {
+    // ignore
   }
-}
-
-export function syncDraftLeadToStores(
-  ctx: ConversationContext,
-  messages: ConversationMessage[],
-  language: Language,
-  sessionId: string,
-  addLead: (lead: Lead) => void
-): void {
-  const draft = buildDraftLead(ctx, messages, language, sessionId);
-  if (!draft) return;
-  addLead(draft);
-  saveLeadToLocalStorage(draft);
-}
-
-export function syncNotificationForLead(
-  lead: Lead,
-  addNotification: (n: Notification) => void
-): void {
-  const notification = leadToNotification(lead);
-  addNotification(notification);
-  saveNotificationToLocalStorage(notification);
 }
 
 export function ensureNotificationArray(
