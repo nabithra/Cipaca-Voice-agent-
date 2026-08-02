@@ -12,10 +12,12 @@ interface LanguageSelectorProps {
 }
 
 export function LanguageSelector({ onStart }: LanguageSelectorProps) {
-  const { language, setLanguage, setLanguageSelected } = useVoiceStore();
+  const { language, setLanguage, setLanguageSelected, resetConversation } =
+    useVoiceStore();
 
   const selectLanguage = (lang: Language) => {
     setLanguage(lang);
+    resetConversation(lang);
     setLanguageSelected(true);
   };
 

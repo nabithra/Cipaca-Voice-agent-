@@ -293,6 +293,7 @@ export function useFallbackVoice() {
     setGreAssigned,
     setEmergencyStage,
     dismissEmergencyBanner,
+    resetConversation,
   } = useVoiceStore();
 
   const startRecognition = useCallback((): boolean => {
@@ -546,14 +547,11 @@ export function useFallbackVoice() {
       setMode("fallback");
 
       preloadVoices();
+      resetSpeechVoice();
 
-      const store = useVoiceStore.getState();
-      if (!store.sessionId) {
-        setSessionId(`session-${Date.now()}`);
-      }
-      if (!store.hasActiveSession) {
-        setHasActiveSession(true);
-      }
+      // Always start a clean session — stale English localStorage breaks Tamil on Vercel
+      resetConversation(language);
+      setHasActiveSession(true);
       useVoiceStore.getState().setCallStartTime(Date.now());
 
       try {
@@ -595,7 +593,8 @@ export function useFallbackVoice() {
       const recognition = new SpeechRecognitionAPI();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = language === "ta" ? "ta-IN" : "en-IN";
+      // Tamil + English hints — Chrome handles Thanglish better than ta-IN alone
+      recognition.lang = language === "ta" ? "ta-IN,en-IN" : "en-IN";
 
       recognition.onstart = () => {
         isRecognitionActiveRef.current = true;
@@ -724,6 +723,7 @@ export function useFallbackVoice() {
     speak,
     stopRecognition,
     startRecognition,
+    resetConversation,
   ]);
 
   const disconnect = useCallback(() => {

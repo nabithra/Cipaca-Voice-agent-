@@ -77,15 +77,17 @@ export function VoiceInterface() {
       if (isActive) return;
       if (e.key === "1") {
         setLanguage("en");
+        resetConversation("en");
         setLanguageSelected(true);
       } else if (e.key === "2") {
         setLanguage("ta");
+        resetConversation("ta");
         setLanguageSelected(true);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isActive, setLanguage, setLanguageSelected]);
+  }, [isActive, resetConversation, setLanguage, setLanguageSelected]);
 
   useEffect(() => {
     fetch("/api/health")

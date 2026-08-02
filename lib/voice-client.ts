@@ -119,6 +119,27 @@ export function preloadVoices(): void {
   window.speechSynthesis.onvoiceschanged = load;
 }
 
+/** Wait briefly for Tamil voices to load (common on first HTTPS page load). */
+async function ensureVoicesLoaded(preferLang: "en" | "ta"): Promise<void> {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  const hasVoice = () =>
+    window.speechSynthesis.getVoices().some((v) => v.lang.startsWith(preferLang));
+  cachedVoices = window.speechSynthesis.getVoices();
+  if (preferLang === "en" || hasVoice()) return;
+
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      cachedVoices = window.speechSynthesis.getVoices();
+      resolve();
+    };
+    const timer = window.setTimeout(done, 800);
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.clearTimeout(timer);
+      done();
+    };
+  });
+}
+
 function cancelBrowserSpeech(): Promise<void> {
   if (typeof window === "undefined" || !window.speechSynthesis) {
     return Promise.resolve();
@@ -236,6 +257,8 @@ export async function speakText(
 
   voiceDebug.setStage("tts", "fallback");
   voiceDebug.log("TTS: using browser speechSynthesis");
+
+  await ensureVoicesLoaded(language === "ta" ? "ta" : "en");
 
   const { voice, lang } = pickVoice(speechText, language);
   if (voice) {

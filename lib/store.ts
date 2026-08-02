@@ -103,10 +103,23 @@ export const useVoiceStore = create<VoiceStore>()(
       setMode: (mode) => set({ mode }),
       setMuted: (isMuted) => set({ isMuted }),
       setLanguage: (language) =>
-        set((s) => ({
-          language,
-          conversationContext: { ...s.conversationContext, language },
-        })),
+        set((s) => {
+          if (s.language === language) {
+            return {
+              language,
+              conversationContext: { ...s.conversationContext, language },
+            };
+          }
+          return {
+            language,
+            conversationContext: createInitialContext(language),
+            messages: [],
+            userTranscript: "",
+            aiTranscript: "",
+            hasActiveSession: false,
+            error: null,
+          };
+        }),
       setLanguageSelected: (languageSelected) => set({ languageSelected }),
       setSessionId: (sessionId) => set({ sessionId }),
       setConversationContext: (conversationContext) => set({ conversationContext }),
