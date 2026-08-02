@@ -2,8 +2,11 @@
 
 import type { Language } from "@/types";
 import { prepareForSpeech } from "@/lib/language-style";
-import { transliterateForTamilTts, tamilLoanwordsToLatin } from "@/lib/tamil-phonetics";
-import { tamilToSpokenRoman } from "@/lib/tamil-tts-fallback";
+import { transliterateForTamilTts } from "@/lib/tamil-phonetics";
+import {
+  tamilToSpokenRoman,
+  TAMIL_FALLBACK_SPEECH_RATE,
+} from "@/lib/tamil-tts-fallback";
 import { chunkForSpeech, sanitizeForTts } from "@/lib/tamil-input";
 
 export type PipelineStage =
@@ -262,8 +265,7 @@ function prepareBrowserSpeechText(
     return tamilScript;
   }
 
-  const withLatinLoanwords = tamilLoanwordsToLatin(tamilScript);
-  return prepareForSpeech(tamilToSpokenRoman(withLatinLoanwords));
+  return prepareForSpeech(tamilToSpokenRoman(tamilScript));
 }
 
 export async function speakText(
@@ -338,7 +340,13 @@ export async function speakText(
   try {
     for (const chunk of chunks) {
       if (generation !== speakGeneration) return "skipped";
-      const ok = await speakOnce(chunk, voice, lang, generation);
+      const ok = await speakOnce(
+        chunk,
+        voice,
+        lang,
+        generation,
+        tamilRomanFallback ? TAMIL_FALLBACK_SPEECH_RATE : 0.95
+      );
       if (!ok) {
         voiceDebug.log("TTS skipped — text shown on screen, voice continues");
         voiceDebug.setStage("tts", "fallback");
@@ -399,7 +407,8 @@ function speakOnce(
   text: string,
   voice: SpeechSynthesisVoice | undefined,
   lang: string,
-  generation: number
+  generation: number,
+  rate = 0.95
 ): Promise<boolean> {
   return new Promise((resolve) => {
     if (typeof window === "undefined" || !window.speechSynthesis) {
@@ -413,7 +422,7 @@ function speakOnce(
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = lang;
-    utterance.rate = 0.95;
+    utterance.rate = rate;
     utterance.pitch = 1;
     utterance.volume = 1;
     if (voice) utterance.voice = voice;
