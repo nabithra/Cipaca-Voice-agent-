@@ -59,16 +59,14 @@ export function VoiceInterface() {
 
   const handleStart = useCallback(async () => {
     if (!languageSelected) return;
-    resetConversation(language);
     await connect();
-  }, [connect, language, languageSelected, resetConversation]);
+  }, [connect, languageSelected]);
 
   const handleMicClick = async () => {
     if (isActive) {
       disconnect();
       resetConversation(language);
     } else if (languageSelected) {
-      resetConversation(language);
       await connect();
     }
   };
@@ -172,8 +170,7 @@ export function VoiceInterface() {
                       <div className="rounded-xl bg-muted/50 p-4">
                         <p className="text-xs font-medium text-muted-foreground mb-2">AI Response</p>
                         <p className="text-sm min-h-[2rem]">
-                          {aiTranscript ||
-                            messages.filter((m) => m.role === "assistant").slice(-1)[0]?.content || (
+                          {aiTranscript || (
                             <span className="text-muted-foreground italic">
                               {isSpeaking ? "Speaking..." : "—"}
                             </span>

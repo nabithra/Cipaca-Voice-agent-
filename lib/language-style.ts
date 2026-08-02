@@ -245,12 +245,6 @@ export function greeting(lang: Language): string {
   );
 }
 
-const WELCOME_MARKER = /Welcome to CIPACA|CIPACA Hospital, Thiruvannamalai/i;
-
-export function isWelcomeMessage(text: string): boolean {
-  return WELCOME_MARKER.test(text);
-}
-
 /** Short follow-up when caller says hello after the welcome. */
 export function greetingFollowUp(lang: Language): string {
   return say(

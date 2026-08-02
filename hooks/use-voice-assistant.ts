@@ -8,7 +8,6 @@ import { speakText, fetchWithRetry, voiceDebug, preloadVoices, resetSpeechVoice 
 import { runEmergencyStageSimulation } from "@/lib/emergency-flow";
 import { GRE_TEAM } from "@/lib/knowledge-base";
 import { getLocalGreeting } from "@/lib/local-assistant";
-import { isWelcomeMessage } from "@/lib/language-style";
 import type { ConversationContext, ConversationMessage, Lead, Notification } from "@/types";
 import { createInitialContext } from "@/types";
 
@@ -269,6 +268,18 @@ export function useRealtimeVoice() {
   return { connect, disconnect };
 }
 
+/** Start STT without throwing if the engine is already running. */
+function safeStartRecognition(recognition: SpeechRecognition): boolean {
+  try {
+    recognition.start();
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/already started/i.test(msg)) return true;
+    throw err;
+  }
+}
+
 export function useFallbackVoice() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const isSpeakingRef = useRef(false);
@@ -299,16 +310,9 @@ export function useFallbackVoice() {
   } = useVoiceStore();
 
   const resumeListening = useCallback(() => {
-    if (!recognitionRef.current) return;
-    try {
-      recognitionRef.current.start();
-      setStatus("listening");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      if (!/already started/i.test(msg)) {
-        voiceDebug.log(`SpeechRecognition resume: ${msg || "unknown"}`);
-      }
-    }
+    if (!recognitionRef.current || isGreetingRef.current) return;
+    safeStartRecognition(recognitionRef.current);
+    setStatus("listening");
   }, [setStatus]);
 
   const speak = useCallback(
@@ -323,7 +327,6 @@ export function useFallbackVoice() {
       } finally {
         isSpeakingRef.current = false;
         setStatus("listening");
-        // Greeting finish — connect() starts recognition once after welcome
         if (!isGreetingRef.current) {
           resumeListening();
         }
@@ -490,6 +493,16 @@ export function useFallbackVoice() {
       setError(null);
       setMode("fallback");
 
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.stop();
+        } catch {
+          /* ignore */
+        }
+        recognitionRef.current = null;
+      }
+
       preloadVoices();
 
       const store = useVoiceStore.getState();
@@ -519,16 +532,6 @@ export function useFallbackVoice() {
       if (!SpeechRecognitionAPI) {
         voiceDebug.error("SpeechRecognition not supported", "speechRecognition");
         throw new Error("Speech recognition not supported in this browser. Try Chrome or Edge.");
-      }
-
-      // Clean up any prior session before creating a new recognizer
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {
-          /* ignore */
-        }
-        recognitionRef.current = null;
       }
 
       const recognition = new SpeechRecognitionAPI();
@@ -584,25 +587,16 @@ export function useFallbackVoice() {
           conversationContext.state !== "SESSION_CLOSED" &&
           !isGreetingRef.current
         ) {
-          try { recognitionRef.current.start(); } catch { /* already running */ }
+          safeStartRecognition(recognitionRef.current);
         }
       };
 
       recognitionRef.current = recognition;
 
-      const { messages: currentMessages, conversationContext: currentCtx } =
-        useVoiceStore.getState();
-      const inActiveWorkflow = currentCtx.workflowStatus === "active";
-      const hasWelcome = currentMessages.some(
-        (m) => m.role === "assistant" && isWelcomeMessage(m.content)
-      );
-      const shouldGreet = !inActiveWorkflow && !hasWelcome;
+      const { messages, conversationContext } = useVoiceStore.getState();
+      const shouldGreet = messages.length === 0;
 
       if (shouldGreet) {
-        if (currentMessages.length > 0) {
-          useVoiceStore.setState({ messages: [], userTranscript: "", aiTranscript: "" });
-        }
-
         const greetingText = getLocalGreeting(language);
         addMessage({
           role: "assistant",
@@ -618,20 +612,13 @@ export function useFallbackVoice() {
           currentStep: "classify",
           currentWorkflow: null,
         });
-        setUserTranscript("");
-        setAiTranscript(greetingText);
         isGreetingRef.current = true;
         setStatus("speaking");
         await speak(greetingText);
         isGreetingRef.current = false;
       }
 
-      try {
-        recognition.start();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Failed to start speech recognition";
-        if (!/already started/i.test(msg)) throw err;
-      }
+      safeStartRecognition(recognition);
 
       voiceDebug.setStage("microphone", "working");
       voiceDebug.setStage("speechRecognition", "working");
@@ -658,7 +645,6 @@ export function useFallbackVoice() {
     setSessionId,
     setStatus,
     setUserTranscript,
-    setAiTranscript,
     speak,
   ]);
 
@@ -670,11 +656,9 @@ export function useFallbackVoice() {
     resetSpeechVoice();
     isGreetingRef.current = false;
     isProcessingRef.current = false;
-    setUserTranscript("");
-    setAiTranscript("");
     setStatus("disconnected");
     voiceDebug.reset();
-  }, [setStatus, setUserTranscript, setAiTranscript]);
+  }, [setStatus]);
 
   useEffect(() => () => disconnect(), [disconnect]);
 
@@ -707,7 +691,7 @@ export function useVoiceAssistant() {
       const fallbackSuccess = await fallback.connect();
       if (!fallbackSuccess) {
         const detail = useVoiceStore.getState().error;
-        setError(detail || "Unable to connect. Please try Restart or use Chrome/Edge.");
+        setError(detail || "Unable to connect. Please try again.");
         setStatus("error");
       }
       return;
@@ -725,7 +709,7 @@ export function useVoiceAssistant() {
     const fallbackSuccess = await fallback.connect();
     if (!fallbackSuccess) {
       const detail = useVoiceStore.getState().error;
-      setError(detail || "Unable to connect. Please try Restart or use Chrome/Edge.");
+      setError(detail || "Unable to connect. Please try again.");
       setStatus("error");
     }
   }, [realtime, fallback, setDemoMode, setMode, setError, setStatus]);
