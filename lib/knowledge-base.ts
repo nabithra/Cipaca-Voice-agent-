@@ -5,6 +5,7 @@ export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = {
   billing: "Billing counter open 9 AM - 6 PM. Online payment available via CIPACA portal. Accepts cash, card, UPI, and insurance.",
   insurance: "Cashless treatment available for major insurance providers. Submit policy details at admission. TPA desk available 9 AM - 5 PM.",
   departments: [
+    { id: "dept-neuro", category: "departments", title: "Neurology", content: "Stroke, seizures, neurological disorders. Specialist consultation by appointment.", tags: ["neurology", "stroke"], updatedAt: "2026-01-15" },
     { id: "dept-emergency", category: "departments", title: "Emergency & Trauma", content: "24/7 emergency care. Accident, trauma, critical illness, unconscious patients. Direct line: GRE Emergency Line.", tags: ["emergency", "trauma", "24/7"], updatedAt: "2026-01-15" },
     { id: "dept-cardiology", category: "departments", title: "Cardiology", content: "Heart care, ECG, echocardiography, angiography. Dr. Rajesh Kumar (Mon-Fri 10 AM-4 PM).", tags: ["heart", "cardiology"], updatedAt: "2026-01-15" },
     { id: "dept-ortho", category: "departments", title: "Orthopedics", content: "Bone, joint, fracture care. Dr. Priya Menon (Mon-Sat 9 AM-1 PM).", tags: ["orthopedics", "fracture"], updatedAt: "2026-01-15" },
@@ -27,6 +28,8 @@ export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = {
     { id: "spec-onco", category: "specialties", title: "Oncology", content: "Cancer care and chemotherapy. Specialist consultation by appointment.", tags: ["cancer", "oncology"], updatedAt: "2026-01-15" },
   ],
   diagnostics: [
+    { id: "diag-ultrasound", category: "diagnostics", title: "Ultrasound", content: "Ultrasound imaging. Appointment recommended. Report within 24 hours.", tags: ["ultrasound", "scan"], updatedAt: "2026-01-15" },
+    { id: "diag-ecg", category: "diagnostics", title: "ECG", content: "Electrocardiogram. Walk-in available 7 AM - 8 PM. Immediate report for emergencies.", tags: ["ecg", "heart"], updatedAt: "2026-01-15" },
     { id: "diag-mri", category: "diagnostics", title: "MRI Scan", content: "Magnetic Resonance Imaging. Appointment required. Fasting may be required. Report in 24-48 hours.", tags: ["mri", "scan"], updatedAt: "2026-01-15" },
     { id: "diag-ct", category: "diagnostics", title: "CT Scan", content: "Computed Tomography. Walk-in or appointment. Report same day for emergency cases.", tags: ["ct", "scan"], updatedAt: "2026-01-15" },
     { id: "diag-xray", category: "diagnostics", title: "X-Ray", content: "Available walk-in 7 AM - 8 PM. Report within 2 hours.", tags: ["xray", "scan"], updatedAt: "2026-01-15" },
@@ -48,11 +51,17 @@ export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = {
     { id: "faq-parking", category: "faqs", title: "Parking", content: "Free parking available for patients and visitors. Valet service at main entrance.", tags: ["parking"], updatedAt: "2026-01-15" },
     { id: "faq-records", category: "faqs", title: "Medical Records", content: "Request copies at medical records desk. Processing time 24-48 hours. ID proof required.", tags: ["records"], updatedAt: "2026-01-15" },
     { id: "faq-billing", category: "faqs", title: "Billing Queries", content: "Contact customer care 9 AM - 6 PM. Detailed bill provided at discharge.", tags: ["billing"], updatedAt: "2026-01-15" },
+    { id: "faq-icu", category: "faqs", title: "ICU", content: "ICU available 24/7. Visiting hours 11 AM-12 PM and 5 PM-6 PM. Critical care team on standby.", tags: ["icu", "intensive care"], updatedAt: "2026-01-15" },
+    { id: "faq-blood", category: "faqs", title: "Blood Bank", content: "Blood bank open 24/7. Cross-matching available. Contact emergency line for urgent requirements.", tags: ["blood bank", "blood"], updatedAt: "2026-01-15" },
+    { id: "faq-vaccine", category: "faqs", title: "Vaccination", content: "Vaccination clinic Mon-Sat 9 AM-5 PM. Walk-in and scheduled vaccinations available.", tags: ["vaccination", "vaccine"], updatedAt: "2026-01-15" },
+    { id: "faq-packages", category: "faqs", title: "Health Packages", content: "Preventive health check packages from basic to executive. Book via helpline or walk-in diagnostics.", tags: ["health package", "checkup"], updatedAt: "2026-01-15" },
+    { id: "faq-directions", category: "faqs", title: "Hospital Location", content: "CIPACA Thiruvannamalai Unit, main town road near bus stand. Landmark: opposite government hospital.", tags: ["location", "directions", "address"], updatedAt: "2026-01-15" },
+    { id: "faq-payment", category: "faqs", title: "Payment Methods", content: "Cash, card, UPI, and insurance accepted. Billing counter 9 AM-6 PM.", tags: ["payment", "upi", "card"], updatedAt: "2026-01-15" },
   ],
 };
 
 export function searchKnowledgeBase(query: string, kb: KnowledgeBase = DEFAULT_KNOWLEDGE_BASE): string {
-  const q = query.toLowerCase();
+  const q = normalizeQuery(query.toLowerCase());
   const allEntries = [
     ...kb.departments,
     ...kb.doctors,
@@ -67,15 +76,38 @@ export function searchKnowledgeBase(query: string, kb: KnowledgeBase = DEFAULT_K
     (e) =>
       e.title.toLowerCase().includes(q) ||
       e.content.toLowerCase().includes(q) ||
-      e.tags.some((t) => t.includes(q) || q.includes(t))
+      e.tags.some((t) => t.includes(q) || q.includes(t) || q.split(/\s+/).some((w) => w.length > 2 && (t.includes(w) || e.title.toLowerCase().includes(w))))
   );
 
-  const top = matches.slice(0, 5);
+  const top = matches.slice(0, 3);
   if (top.length === 0) {
     return `No specific information found for "${query}". Please escalate to customer care for confirmation.`;
   }
 
   return top.map((e) => `[${e.title}]: ${e.content}`).join("\n\n");
+}
+
+/** Map Thanglish / mixed queries to searchable English terms */
+function normalizeQuery(q: string): string {
+  const hints: [RegExp, string][] = [
+    [/visiting hours|visitor timing|enna time open|eppo open/i, "visiting hours"],
+    [/parking|car park|vehicle/i, "parking"],
+    [/blood bank|blood venum/i, "blood bank"],
+    [/pharmacy|medicine shop/i, "pharmacy"],
+    [/ambulance|108/i, "ambulance"],
+    [/icu|intensive care/i, "icu"],
+    [/vaccination|vaccine|injection/i, "vaccination"],
+    [/health package|master checkup|full body/i, "health package"],
+    [/location|address|enga irukku|where is|directions/i, "location"],
+    [/payment|upi|card|pay/i, "payment"],
+    [/insurance|cashless|tpa/i, "insurance"],
+    [/report|lab result|scan report/i, "report"],
+    [/discharge|medical records|records/i, "records"],
+  ];
+  for (const [re, term] of hints) {
+    if (re.test(q)) return term;
+  }
+  return q;
 }
 
 export function buildKnowledgeContext(): string {
@@ -115,9 +147,9 @@ export const PILOT_UNITS: PilotUnit[] = [
 ];
 
 export const GRE_TEAM: import("@/types").GREMember[] = [
-  { id: "gre-1", name: "GRE-1", shift: "morning", status: "available", line: "emergency", callsHandled: 24 },
-  { id: "gre-2", name: "GRE-2", shift: "afternoon", status: "available", line: "support", callsHandled: 18 },
-  { id: "gre-3", name: "GRE-3", shift: "night", status: "offline", line: "support", callsHandled: 12 },
+  { id: "gre-1", name: "GRE Executive — Shift A", shift: "morning", status: "available", line: "emergency", callsHandled: 24 },
+  { id: "gre-2", name: "GRE Executive — Shift B", shift: "afternoon", status: "available", line: "support", callsHandled: 18 },
+  { id: "gre-3", name: "GRE Executive — Shift C", shift: "night", status: "available", line: "support", callsHandled: 12 },
 ];
 
 export const GRE_EMERGENCY_LINE = "CIPACA Emergency Line (GRE Dedicated)";

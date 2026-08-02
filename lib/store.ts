@@ -56,6 +56,7 @@ interface VoiceStore {
   addMessage: (message: ConversationMessage) => void;
   setEmergency: (isEmergency: boolean, ticketId?: string) => void;
   setEmergencyStage: (stage: EmergencyStage | null) => void;
+  dismissEmergencyBanner: () => void;
   setArrivalStage: (stage: ArrivalStage | null) => void;
   setEscalating: (escalating: boolean, escalationId?: string) => void;
   setGreAssigned: (gre: string | null) => void;
@@ -121,6 +122,8 @@ export const useVoiceStore = create<VoiceStore>()(
           emergencyStage: isEmergency ? "detected" : null,
         }),
       setEmergencyStage: (emergencyStage) => set({ emergencyStage }),
+      dismissEmergencyBanner: () =>
+        set({ isEmergency: false, emergencyStage: null }),
       setArrivalStage: (arrivalStage) => set({ arrivalStage }),
       setEscalating: (isEscalating, escalationId) =>
         set({ isEscalating, escalationId: escalationId ?? null }),

@@ -260,9 +260,11 @@ export interface DashboardStats {
   totalCalls: number;
   emergency: number;
   appointments: number;
+  diagnostics: number;
   escalations: number;
   general: number;
   completed: number;
+  pendingCalls: number;
   avgResponseTimeMs: number;
   avgCallDurationSeconds: number;
   dailyCalls: number;
@@ -308,7 +310,15 @@ export type ConversationIntent =
   | "escalation"
   | null;
 
-export type WorkflowType = "appointment" | "emergency" | "faq" | null;
+export type WorkflowType =
+  | "appointment"
+  | "specialist"
+  | "diagnostic"
+  | "admission"
+  | "emergency"
+  | "faq"
+  | "escalation"
+  | null;
 
 export type WorkflowStatus = "idle" | "active" | "completed" | "closed";
 
@@ -318,12 +328,29 @@ export type WorkflowStep =
   | "ask_phone"
   | "ask_location"
   | "ask_travelling"
+  | "ask_emergency_type"
+  | "ask_patient_condition"
   | "ask_department"
+  | "ask_specialist_required"
   | "ask_doctor"
+  | "ask_test_type"
+  | "ask_hospital_unit"
+  | "ask_admission_reason"
   | "ask_date"
   | "ask_time"
   | "anything_else"
   | "closed";
+
+export type CallCategory =
+  | "Emergency"
+  | "Appointment"
+  | "Specialist Consultation"
+  | "Scan Booking"
+  | "Admission"
+  | "Diagnostics"
+  | "General Information"
+  | "Customer Care"
+  | "Administrative Inquiry";
 
 export interface ConversationContext {
   conversationId?: string;
@@ -332,11 +359,16 @@ export interface ConversationContext {
   workflowStatus: WorkflowStatus;
   currentStep: WorkflowStep;
   intent: ConversationIntent;
+  callCategory?: CallCategory;
   language: Language;
   name?: string;
   phone?: string;
   department?: string;
   doctor?: string;
+  specialistRequired?: boolean;
+  testType?: string;
+  patientCondition?: string;
+  hospitalUnit?: string;
   preferredDate?: string;
   preferredTime?: string;
   location?: string;
@@ -349,6 +381,9 @@ export interface ConversationContext {
   greeted: boolean;
   awaitingAnythingElse: boolean;
   appointmentSaved: boolean;
+  failedAttempts?: number;
+  greAssigned?: string;
+  pendingConfirm?: string;
 }
 
 export function createInitialContext(language: Language = "en"): ConversationContext {

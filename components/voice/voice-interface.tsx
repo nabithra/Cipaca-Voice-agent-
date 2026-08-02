@@ -50,6 +50,7 @@ export function VoiceInterface() {
     setLanguageSelected,
     setDemoMode,
     resetConversation,
+    dismissEmergencyBanner,
   } = useVoiceStore();
 
   const isActive = status !== "disconnected" && status !== "error";
@@ -104,6 +105,7 @@ export function VoiceInterface() {
         stage={emergencyStage}
         ticketId={emergencyTicketId}
         greAssigned={greAssigned}
+        onDismiss={dismissEmergencyBanner}
       />
 
       <EscalationOverlay

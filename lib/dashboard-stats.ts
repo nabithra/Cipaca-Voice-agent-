@@ -18,16 +18,27 @@ export function computeDashboardStats(leads: Lead[]): DashboardStats {
     .filter((l) => l.callDurationSeconds)
     .map((l) => l.callDurationSeconds as number);
 
+  const diagnosticInquiryTypes = new Set([
+    "MRI", "CT", "X-Ray", "Lab Investigation", "Scan Booking",
+  ]);
+
   return {
     totalCalls: leads.length,
     emergency: emergencyLeads.length,
     appointments: leads.filter((l) => l.category === "Appointment").length,
+    diagnostics: leads.filter(
+      (l) =>
+        l.inquiryType && diagnosticInquiryTypes.has(l.inquiryType)
+    ).length,
     escalations: leads.filter((l) => l.category === "Escalation").length,
     general: leads.filter(
       (l) => l.category === "General Inquiry" || l.category === "Non-Emergency"
     ).length,
     completed: leads.filter(
       (l) => l.status === "completed" || l.status === "resolved" || l.status === "closed"
+    ).length,
+    pendingCalls: leads.filter(
+      (l) => l.status === "new" || l.status === "in-progress" || l.appointmentStatus === "pending"
     ).length,
     avgResponseTimeMs:
       responseTimes.length > 0

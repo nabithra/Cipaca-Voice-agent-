@@ -10,6 +10,7 @@ import {
 import { coordinateArrival } from "@/server/actions/arrival";
 import { searchKnowledge } from "@/server/actions/knowledge";
 import { routeCall } from "@/server/actions/gre";
+import { runEmergencyStageSimulation } from "@/lib/emergency-flow";
 import {
   saveLeadToLocalStorage,
   useLeadStore,
@@ -17,20 +18,10 @@ import {
 } from "@/lib/store";
 import type {
   ConversationMessage,
-  EmergencyStage,
   EscalationReason,
   Language,
   Lead,
 } from "@/types";
-
-const EMERGENCY_STAGE_SEQUENCE: EmergencyStage[] = [
-  "detected",
-  "collecting_details",
-  "alerting_gre",
-  "alerting_hospital",
-  "preparing_admission",
-  "connecting_human",
-];
 
 function playEmergencyTone(): void {
   try {
@@ -55,19 +46,20 @@ function playEmergencyTone(): void {
 }
 
 async function advanceEmergencyStages(
-  setEmergencyStage: (s: EmergencyStage | null) => void,
+  setEmergencyStage: (s: import("@/types").EmergencyStage | null) => void,
   setEscalating: (e: boolean, id?: string) => void,
-  setGreAssigned: (g: string | null) => void
+  setGreAssigned: (g: string | null) => void,
+  dismissEmergencyBanner: () => void
 ) {
-  for (let i = 1; i < EMERGENCY_STAGE_SEQUENCE.length; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    setEmergencyStage(EMERGENCY_STAGE_SEQUENCE[i]);
-    if (EMERGENCY_STAGE_SEQUENCE[i] === "connecting_human") {
+  await runEmergencyStageSimulation(setEmergencyStage, {
+    stepMs: 600,
+    onComplete: async () => {
       const route = await routeCall("emergency");
       setGreAssigned(route.assignedTo);
       setEscalating(true);
-    }
-  }
+      setTimeout(() => dismissEmergencyBanner(), 2500);
+    },
+  });
 }
 
 export function useToolHandler() {
@@ -80,6 +72,7 @@ export function useToolHandler() {
     setArrivalStage,
     setEscalating,
     setGreAssigned,
+    dismissEmergencyBanner,
   } = useVoiceStore();
 
   const getConversation = useCallback(
@@ -137,7 +130,12 @@ export function useToolHandler() {
             saveLeadToLocalStorage(result.lead);
             setEmergency(true, result.ticketId);
             playEmergencyTone();
-            advanceEmergencyStages(setEmergencyStage, setEscalating, setGreAssigned);
+            advanceEmergencyStages(
+              setEmergencyStage,
+              setEscalating,
+              setGreAssigned,
+              dismissEmergencyBanner
+            );
 
             if (args.isTravelling) {
               setArrivalStage("patient_travelling");

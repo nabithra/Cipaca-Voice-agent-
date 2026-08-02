@@ -33,6 +33,14 @@ import {
   getUnitPerformance,
   getWeeklyChartData,
 } from "@/lib/dashboard-stats";
+import {
+  buildDailyReport,
+  downloadCsv,
+  filterLeadsByCategory,
+  filterLeadsToday,
+  leadsToCsv,
+} from "@/lib/reports";
+import { getNotificationColor, notificationColorClasses, priorityLabel } from "@/lib/notification-colors";
 import type { Lead, LeadCategory, Notification } from "@/types";
 import { formatDate } from "@/lib/utils";
 import {
@@ -125,18 +133,30 @@ export function DashboardView() {
     URL.revokeObjectURL(url);
   };
 
+  const exportCsv = (filename: string, data: Lead[]) => {
+    downloadCsv(filename, leadsToCsv(data));
+  };
+
+  const exportDailyReport = () => {
+    const report = buildDailyReport(leads, safeNotifications);
+    downloadCsv(
+      `cipaca-daily-report-${report.date}.csv`,
+      leadsToCsv(filterLeadsToday(leads))
+    );
+  };
+
   const statCards = [
-    { title: "Total Calls", value: stats.totalCalls, icon: PhoneCall, color: "text-teal-500" },
+    { title: "Today's Calls", value: stats.dailyCalls, icon: PhoneCall, color: "text-teal-500" },
     { title: "Emergency", value: stats.emergency, icon: Phone, color: "text-red-500" },
     { title: "Appointments", value: stats.appointments, icon: PhoneCall, color: "text-blue-500" },
-    { title: "General", value: stats.general, icon: Phone, color: "text-cyan-500" },
-    { title: "Escalated", value: stats.escalations, icon: PhoneOff, color: "text-purple-500" },
-    { title: "Completed", value: stats.completed, icon: TrendingUp, color: "text-green-500" },
-    { title: "Daily Calls", value: stats.dailyCalls, icon: Clock, color: "text-orange-500" },
+    { title: "Diagnostics", value: stats.diagnostics, icon: Phone, color: "text-cyan-500" },
+    { title: "General Inquiries", value: stats.general, icon: Phone, color: "text-green-500" },
+    { title: "Escalations", value: stats.escalations, icon: PhoneOff, color: "text-purple-500" },
+    { title: "Completed", value: stats.completed, icon: TrendingUp, color: "text-green-600" },
+    { title: "Pending", value: stats.pendingCalls, icon: Clock, color: "text-orange-500" },
+    { title: "Total Calls", value: stats.totalCalls, icon: PhoneCall, color: "text-teal-600" },
     { title: "Weekly Calls", value: stats.weeklyCalls, icon: Clock, color: "text-indigo-500" },
-    { title: "Monthly Calls", value: stats.monthlyCalls, icon: Clock, color: "text-pink-500" },
     { title: "Avg Response", value: `${stats.avgResponseTimeMs}ms`, icon: Timer, color: "text-teal-500" },
-    { title: "Avg Duration", value: `${stats.avgCallDurationSeconds}s`, icon: Timer, color: "text-blue-500" },
     { title: "Emergency Success", value: `${stats.emergencySuccessRate}%`, icon: TrendingUp, color: "text-red-500" },
   ];
 
@@ -148,9 +168,31 @@ export function DashboardView() {
             <h1 className="text-3xl font-bold">Dashboard</h1>
             <p className="text-muted-foreground">CIPACA AI Voice Assistant Analytics</p>
           </div>
-          <Button onClick={exportJSON} variant="outline">
-            <Download className="h-4 w-4 mr-2" /> Export JSON
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={exportJSON} variant="outline" size="sm">
+              <Download className="h-4 w-4 mr-2" /> Export JSON
+            </Button>
+            <Button onClick={() => exportCsv("cipaca-leads.csv", filteredLeads)} variant="outline" size="sm">
+              <Download className="h-4 w-4 mr-2" /> Export Leads CSV
+            </Button>
+            <Button onClick={exportDailyReport} variant="outline" size="sm">
+              <Download className="h-4 w-4 mr-2" /> Daily Report CSV
+            </Button>
+            <Button
+              onClick={() => exportCsv("cipaca-emergency.csv", filterLeadsByCategory(leads, "Emergency"))}
+              variant="outline"
+              size="sm"
+            >
+              Emergency CSV
+            </Button>
+            <Button
+              onClick={() => exportCsv("cipaca-appointments.csv", filterLeadsByCategory(leads, "Appointment"))}
+              variant="outline"
+              size="sm"
+            >
+              Appointments CSV
+            </Button>
+          </div>
         </div>
 
         <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
@@ -304,18 +346,21 @@ export function DashboardView() {
                 <p className="text-sm text-muted-foreground text-center py-4">No notifications yet</p>
               ) : (
                 <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                  {safeNotifications.slice(0, 10).map((n) => (
-                    <div key={n.id} className={`rounded-lg border p-3 text-sm ${n.priority === "high" ? "border-red-500/30 bg-red-500/5" : "border-border/50"}`}>
-                      <div className="flex justify-between items-start">
+                  {safeNotifications.slice(0, 10).map((n) => {
+                    const color = getNotificationColor(n);
+                    return (
+                    <div key={n.id} className={`rounded-lg border p-3 text-sm ${notificationColorClasses(color)}`}>
+                      <div className="flex justify-between items-start gap-2">
                         <span className="font-medium">{n.title}</span>
-                        {n.priority === "high" && (
-                          <span className="text-xs bg-red-500/10 text-red-600 px-2 py-0.5 rounded-full">High Priority</span>
-                        )}
+                        <span className="text-[10px] px-2 py-0.5 rounded-full shrink-0 bg-background/60">
+                          {priorityLabel(n.type)}
+                        </span>
                       </div>
                       <p className="text-muted-foreground text-xs mt-1">{n.message}</p>
                       <p className="text-xs text-muted-foreground mt-1">{n.targetTeam} · {formatDate(n.createdAt)}</p>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>

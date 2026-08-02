@@ -6,8 +6,8 @@ import {
   isOpenAIConfigured,
   isDemoMode,
 } from "@/lib/openai";
-import { saveAppointment, saveEmergency } from "@/server/actions/leads";
-import type { ConversationContext, ConversationMessage, Lead } from "@/types";
+import { saveAppointment, saveEmergency, saveLead, escalateToHuman } from "@/server/actions/leads";
+import type { ConversationContext, ConversationMessage, Lead, LeadCategory, InquiryType } from "@/types";
 import { createInitialContext } from "@/types";
 
 /** Vercel Hobby plan max serverless duration is 10 seconds. */
@@ -119,6 +119,7 @@ export async function POST(request: NextRequest) {
     if (result.shouldSaveAppointment && result.appointmentData) {
       const saveResult = await saveAppointment({
         ...result.appointmentData,
+        inquiryType: result.appointmentData.inquiryType as InquiryType | undefined,
         referenceId: result.conversationContext?.referenceId,
         language,
         conversation,
@@ -136,6 +137,38 @@ export async function POST(request: NextRequest) {
         location: result.emergencyData.location,
         emergencyType: result.emergencyData.emergencyType ?? "General Emergency",
         isTravelling: result.emergencyData.isTravelling ?? false,
+        language,
+        conversation,
+        conversationSummary: result.conversationContext?.summary,
+      });
+      if (saveResult.success && saveResult.lead) {
+        savedLead = saveResult.lead;
+      }
+    }
+
+    if (result.shouldSaveLead && result.leadData) {
+      const saveResult = await saveLead({
+        name: result.leadData.name,
+        phone: result.leadData.phone,
+        category: result.leadData.category as LeadCategory,
+        inquiryType: result.leadData.inquiryType as InquiryType | undefined,
+        department: result.leadData.department,
+        requestedService: result.leadData.requestedService,
+        language,
+        conversation,
+        conversationSummary: result.leadData.conversationSummary,
+      });
+      if (saveResult.success && saveResult.lead) {
+        savedLead = saveResult.lead;
+      }
+    }
+
+    if (result.shouldEscalate) {
+      const saveResult = await escalateToHuman({
+        name: result.conversationContext?.name,
+        phone: result.conversationContext?.phone,
+        reason: result.leadData?.conversationSummary ?? "Caller requested human executive",
+        escalationReason: "caller_requested",
         language,
         conversation,
         conversationSummary: result.conversationContext?.summary,

@@ -32,6 +32,8 @@ export interface ChatResult {
   conversationContext?: ConversationContext;
   shouldSaveAppointment?: boolean;
   shouldSaveEmergency?: boolean;
+  shouldSaveLead?: boolean;
+  shouldEscalate?: boolean;
   appointmentData?: {
     name: string;
     phone: string;
@@ -39,6 +41,7 @@ export interface ChatResult {
     doctor?: string;
     preferredDate: string;
     preferredTime: string;
+    inquiryType?: string;
     referenceId?: string;
   };
   emergencyData?: {
@@ -46,8 +49,18 @@ export interface ChatResult {
     phone: string;
     location: string;
     emergencyType?: string;
+    patientCondition?: string;
     isTravelling?: boolean;
     referenceId?: string;
+  };
+  leadData?: {
+    name: string;
+    phone: string;
+    category: string;
+    inquiryType?: string;
+    department?: string;
+    requestedService?: string;
+    conversationSummary?: string;
   };
 }
 
@@ -208,8 +221,11 @@ export async function getChatResponse(
       conversationContext: engineResult.context,
       shouldSaveAppointment: engineResult.shouldSaveAppointment,
       shouldSaveEmergency: engineResult.shouldSaveEmergency,
+      shouldSaveLead: engineResult.shouldSaveLead,
+      shouldEscalate: engineResult.shouldEscalate,
       appointmentData: engineResult.appointmentData,
       emergencyData: engineResult.emergencyData,
+      leadData: engineResult.leadData,
     };
   }
 
@@ -220,8 +236,11 @@ export async function getChatResponse(
       conversationContext: engineResult.context,
       shouldSaveAppointment: engineResult.shouldSaveAppointment,
       shouldSaveEmergency: engineResult.shouldSaveEmergency,
+      shouldSaveLead: engineResult.shouldSaveLead,
+      shouldEscalate: engineResult.shouldEscalate,
       appointmentData: engineResult.appointmentData,
       emergencyData: engineResult.emergencyData,
+      leadData: engineResult.leadData,
     };
   } catch (err) {
     console.error("[OpenAI Chat Error]", err);
@@ -233,8 +252,11 @@ export async function getChatResponse(
       conversationContext: engineResult.context,
       shouldSaveAppointment: engineResult.shouldSaveAppointment,
       shouldSaveEmergency: engineResult.shouldSaveEmergency,
+      shouldSaveLead: engineResult.shouldSaveLead,
+      shouldEscalate: engineResult.shouldEscalate,
       appointmentData: engineResult.appointmentData,
       emergencyData: engineResult.emergencyData,
+      leadData: engineResult.leadData,
     };
   }
 }

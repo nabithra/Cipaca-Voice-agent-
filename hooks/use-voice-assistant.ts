@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { useVoiceStore, saveLeadToLocalStorage } from "@/lib/store";
+import { useVoiceStore, saveLeadToLocalStorage, saveNotificationToLocalStorage, useNotificationStore } from "@/lib/store";
 import { useLeadStore } from "@/lib/store";
 import { useToolHandler } from "@/hooks/use-tool-handler";
-import { speakText, fetchWithRetry, voiceDebug } from "@/lib/voice-client";
+import { speakText, fetchWithRetry, voiceDebug, preloadVoices } from "@/lib/voice-client";
+import { runEmergencyStageSimulation } from "@/lib/emergency-flow";
+import { GRE_TEAM } from "@/lib/knowledge-base";
 import { getLocalGreeting } from "@/lib/local-assistant";
-import type { ConversationContext, ConversationMessage, Lead } from "@/types";
+import type { ConversationContext, ConversationMessage, Lead, Notification } from "@/types";
 
 interface RealtimeEvent {
   type: string;
@@ -21,6 +23,49 @@ interface ChatApiResponse {
   details?: string;
   conversationContext?: ConversationContext;
   savedLead?: Lead;
+}
+
+function clientNotificationFromLead(lead: Lead): Notification {
+  const ref = lead.referenceId ?? lead.ticketId ?? lead.escalationId ?? lead.id;
+  const base = { id: `notif-${lead.id}`, read: false, leadId: lead.id, referenceId: ref, createdAt: lead.createdAt };
+  if (lead.category === "Emergency") {
+    return {
+      ...base,
+      type: "emergency",
+      priority: "high",
+      title: "Emergency Alert",
+      message: `${lead.emergencyType ?? "Emergency"} — ${lead.location ?? "Location pending"}. Ticket: ${ref}`,
+      targetTeam: lead.greAssigned ?? "GRE Emergency Team",
+    };
+  }
+  if (lead.category === "Appointment") {
+    return {
+      ...base,
+      type: "appointment",
+      priority: "normal",
+      title: "New Appointment Request",
+      message: `${lead.name} — ${lead.department ?? "General"} on ${lead.preferredDate ?? "TBD"}`,
+      targetTeam: "Appointment Team",
+    };
+  }
+  if (lead.category === "Escalation") {
+    return {
+      ...base,
+      type: "escalation",
+      priority: "high",
+      title: "GRE Escalation",
+      message: `Escalation assigned to ${lead.greAssigned ?? "GRE Executive"}`,
+      targetTeam: lead.greAssigned ?? "GRE/UCR Executive",
+    };
+  }
+  return {
+    ...base,
+    type: "general",
+    priority: "normal",
+    title: "General Inquiry",
+    message: lead.conversationSummary ?? `Inquiry from ${lead.name}`,
+    targetTeam: "Customer Care",
+  };
 }
 
 export function useRealtimeVoice() {
@@ -228,6 +273,7 @@ export function useFallbackVoice() {
   const isProcessingRef = useRef(false);
   const { handleToolCall } = useToolHandler();
   const { addLead } = useLeadStore();
+  const { addNotification } = useNotificationStore();
 
   const {
     language,
@@ -243,6 +289,10 @@ export function useFallbackVoice() {
     setHasActiveSession,
     setDemoMode,
     setEmergency,
+    setEscalating,
+    setGreAssigned,
+    setEmergencyStage,
+    dismissEmergencyBanner,
   } = useVoiceStore();
 
   const resumeListening = useCallback(() => {
@@ -338,18 +388,44 @@ export function useFallbackVoice() {
 
         if (result.data.conversationContext) {
           setConversationContext(result.data.conversationContext);
+          const ctx = result.data.conversationContext;
+          if (ctx.greAssigned) setGreAssigned(ctx.greAssigned);
         }
 
         if (result.data.savedLead) {
           addLead(result.data.savedLead);
           saveLeadToLocalStorage(result.data.savedLead);
+          const notif = clientNotificationFromLead(result.data.savedLead);
+          addNotification(notif);
+          saveNotificationToLocalStorage(notif);
+
           if (result.data.savedLead.category === "Emergency") {
-            setEmergency(
-              true,
+            const ticketId =
               result.data.savedLead.ticketId ??
-                result.data.savedLead.referenceId ??
-                undefined
+              result.data.savedLead.referenceId ??
+              undefined;
+            setEmergency(true, ticketId);
+            const gre =
+              result.data.savedLead.greAssigned ??
+              GRE_TEAM.find((g) => g.line === "emergency")?.name ??
+              null;
+            if (gre) setGreAssigned(gre);
+            // Fast stage simulation — non-blocking banner, auto-dismiss
+            void runEmergencyStageSimulation(setEmergencyStage, {
+              stepMs: 600,
+              onComplete: () => {
+                setTimeout(() => dismissEmergencyBanner(), 2500);
+              },
+            });
+          }
+          if (result.data.savedLead.category === "Escalation") {
+            setEscalating(
+              true,
+              result.data.savedLead.escalationId ?? result.data.savedLead.referenceId
             );
+            if (result.data.savedLead.greAssigned) {
+              setGreAssigned(result.data.savedLead.greAssigned);
+            }
           }
         }
 
@@ -363,7 +439,9 @@ export function useFallbackVoice() {
         voiceDebug.error(`Chat API failed: ${detail}`, "openaiRequest");
         voiceDebug.setApiSource("local");
 
-        responseText = "I'm here to help. Could you please repeat that?";
+        responseText = lang === "ta"
+          ? "Sorry, adhu puriyala. Once more sollunga."
+          : "Sorry, I didn't catch that. Could you please say that again?";
         voiceDebug.log(`Using fallback response: "${responseText.slice(0, 80)}"`);
         voiceDebug.setStage("openaiResponse", "fallback");
       }
@@ -381,11 +459,16 @@ export function useFallbackVoice() {
     },
     [
       addLead,
+      addNotification,
       addMessage,
       handleToolCall,
       setAiTranscript,
       setConversationContext,
       setEmergency,
+      setEmergencyStage,
+      dismissEmergencyBanner,
+      setEscalating,
+      setGreAssigned,
       setError,
       setStatus,
       setUserTranscript,
@@ -398,6 +481,8 @@ export function useFallbackVoice() {
       setStatus("connecting");
       setError(null);
       setMode("fallback");
+
+      preloadVoices();
 
       const store = useVoiceStore.getState();
       if (!store.sessionId) {
@@ -429,7 +514,7 @@ export function useFallbackVoice() {
       }
 
       const recognition = new SpeechRecognitionAPI();
-      recognition.continuous = true;
+      recognition.continuous = false;
       recognition.interimResults = true;
       recognition.lang = language === "ta" ? "ta-IN" : "en-IN";
 
