@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Bell,
   Clock,
@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useLeadStore, useNotificationStore, ensureNotificationArray, mergeLeads, mergeNotifications } from "@/lib/store";
+import { useLeadStore, useNotificationStore, ensureNotificationArray, mergeLeads, mergeNotifications, readLeadsFromStorage, readNotificationsFromStorage, DATA_UPDATED_EVENT } from "@/lib/store";
 import {
   computeDashboardStats,
   getCategoryBarData,
@@ -66,28 +66,35 @@ export function DashboardView() {
   const { notifications, setNotifications, hydrate: hydrateNotifications } = useNotificationStore();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<LeadCategory | "all">("all");
+  const [storageReady, setStorageReady] = useState(false);
 
-  useEffect(() => {
-    const refreshFromStorage = () => {
-      hydrate();
-      hydrateNotifications();
-    };
+  const syncDashboard = useCallback(async () => {
+    hydrate();
+    hydrateNotifications();
 
-    refreshFromStorage();
+    // Read localStorage directly — avoids Zustand async rehydration race on Vercel
+    let mergedLeads = mergeLeads(
+      readLeadsFromStorage(),
+      useLeadStore.getState().leads
+    );
+    let mergedNotifications = mergeNotifications(
+      readNotificationsFromStorage(),
+      useNotificationStore.getState().notifications
+    );
 
-    Promise.all([
-      fetch("/api/leads")
-        .then((r) => (r.ok ? r.json() : []))
-        .catch(() => []),
-      fetch("/api/notifications")
-        .then((r) => (r.ok ? r.json() : []))
-        .catch(() => []),
-    ]).then(([serverLeads, serverNotifications]) => {
-      const localLeads = useLeadStore.getState().leads;
+    try {
+      const [serverLeads, serverNotifications] = await Promise.all([
+        fetch("/api/leads")
+          .then((r) => (r.ok ? r.json() : []))
+          .catch(() => []),
+        fetch("/api/notifications")
+          .then((r) => (r.ok ? r.json() : []))
+          .catch(() => []),
+      ]);
+
       const serverLeadList = Array.isArray(serverLeads) ? (serverLeads as Lead[]) : [];
-      setLeads(mergeLeads(localLeads, serverLeadList));
+      mergedLeads = mergeLeads(mergedLeads, serverLeadList);
 
-      const localNotifications = useNotificationStore.getState().notifications;
       const serverNotifList = Array.isArray(serverNotifications)
         ? (serverNotifications as Notification[])
         : Array.isArray(
@@ -95,22 +102,38 @@ export function DashboardView() {
             )
           ? (serverNotifications as { notifications: Notification[] }).notifications
           : [];
-      setNotifications(mergeNotifications(localNotifications, serverNotifList));
-    });
+      mergedNotifications = mergeNotifications(mergedNotifications, serverNotifList);
+    } catch {
+      // Server empty on Vercel — client storage is the source of truth
+    }
 
+    setLeads(mergedLeads);
+    setNotifications(mergedNotifications);
+    setStorageReady(true);
+  }, [hydrate, hydrateNotifications, setLeads, setNotifications]);
+
+  useEffect(() => {
+    void syncDashboard();
+
+    const refresh = () => void syncDashboard();
+    const unsubHydration = useLeadStore.persist.onFinishHydration(refresh);
+
+    window.addEventListener(DATA_UPDATED_EVENT, refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("storage", refresh);
     const onVisible = () => {
-      if (document.visibilityState === "visible") refreshFromStorage();
+      if (document.visibilityState === "visible") refresh();
     };
-    window.addEventListener("focus", refreshFromStorage);
-    window.addEventListener("storage", refreshFromStorage);
     document.addEventListener("visibilitychange", onVisible);
 
     return () => {
-      window.removeEventListener("focus", refreshFromStorage);
-      window.removeEventListener("storage", refreshFromStorage);
+      unsubHydration();
+      window.removeEventListener(DATA_UPDATED_EVENT, refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("storage", refresh);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [hydrate, hydrateNotifications, setLeads, setNotifications]);
+  }, [syncDashboard]);
 
   const safeNotifications = ensureNotificationArray(notifications);
   const stats = computeDashboardStats(leads);
@@ -179,6 +202,9 @@ export function DashboardView() {
           <div>
             <h1 className="text-3xl font-bold">Dashboard</h1>
             <p className="text-muted-foreground">CIPACA AI Voice Assistant Analytics</p>
+            {!storageReady && (
+              <p className="text-xs text-muted-foreground mt-1">Loading saved calls…</p>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <Button onClick={exportJSON} variant="outline" size="sm">

@@ -7,7 +7,28 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getKnowledge, resetKnowledge, updateKnowledge } from "@/server/actions/knowledge";
+import { KNOWLEDGE_STORAGE_KEY } from "@/lib/constants";
 import type { KnowledgeBase, KnowledgeBaseEntry } from "@/types";
+
+function readKnowledgeFromStorage(): KnowledgeBase | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(KNOWLEDGE_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as KnowledgeBase;
+  } catch {
+    return null;
+  }
+}
+
+function saveKnowledgeToStorage(kb: KnowledgeBase): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(KNOWLEDGE_STORAGE_KEY, JSON.stringify(kb));
+  } catch {
+    // ignore quota errors
+  }
+}
 
 export function KnowledgeAdminView() {
   const [kb, setKb] = useState<KnowledgeBase | null>(null);
@@ -16,9 +37,16 @@ export function KnowledgeAdminView() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
+    const cached = readKnowledgeFromStorage();
+    if (cached) {
+      setKb(cached);
+      setJsonEdit(JSON.stringify(cached, null, 2));
+      return;
+    }
     getKnowledge().then((data) => {
       setKb(data);
       setJsonEdit(JSON.stringify(data, null, 2));
+      saveKnowledgeToStorage(data);
     });
   }, []);
 
@@ -33,6 +61,7 @@ export function KnowledgeAdminView() {
   const handleSave = async () => {
     try {
       const parsed = JSON.parse(jsonEdit) as KnowledgeBase;
+      saveKnowledgeToStorage(parsed);
       await updateKnowledge(parsed);
       setKb(parsed);
       setSaved(true);
@@ -44,6 +73,7 @@ export function KnowledgeAdminView() {
 
   const handleReset = async () => {
     const { kb: defaultKb } = await resetKnowledge();
+    saveKnowledgeToStorage(defaultKb);
     setKb(defaultKb);
     setJsonEdit(JSON.stringify(defaultKb, null, 2));
   };

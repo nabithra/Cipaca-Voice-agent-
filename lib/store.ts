@@ -274,6 +274,27 @@ export function mergeNotifications(
   );
 }
 
+/** Fired when voice saves a lead/notification — dashboard listens in the same tab. */
+export const DATA_UPDATED_EVENT = "cipaca-data-updated";
+
+export function notifyClientDataUpdated(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(DATA_UPDATED_EVENT));
+}
+
+export function readLeadsFromStorage(): Lead[] {
+  if (typeof window === "undefined") return [];
+  return parseStoredArray<Lead>(localStorage.getItem(STORAGE_KEY), "leads");
+}
+
+export function readNotificationsFromStorage(): Notification[] {
+  if (typeof window === "undefined") return [];
+  return parseStoredArray<Notification>(
+    localStorage.getItem(NOTIFICATIONS_STORAGE_KEY),
+    "notifications"
+  );
+}
+
 interface LeadStore {
   leads: Lead[];
   setLeads: (leads: Lead[]) => void;
@@ -286,13 +307,15 @@ export const useLeadStore = create<LeadStore>()(
     (set) => ({
       leads: [],
       setLeads: (leads) => set({ leads: Array.isArray(leads) ? leads : [] }),
-      addLead: (lead) =>
+      addLead: (lead) => {
         set((state) => ({
           leads: [
             lead,
             ...(Array.isArray(state.leads) ? state.leads : []).filter((l) => l.id !== lead.id),
           ],
-        })),
+        }));
+        notifyClientDataUpdated();
+      },
       hydrate: () => {
         if (typeof window === "undefined") return;
         const leads = parseStoredArray<Lead>(localStorage.getItem(STORAGE_KEY), "leads");
@@ -316,13 +339,15 @@ export const useNotificationStore = create<NotificationStore>()(
       notifications: [],
       setNotifications: (notifications) =>
         set({ notifications: Array.isArray(notifications) ? notifications : [] }),
-      addNotification: (n) =>
+      addNotification: (n) => {
         set((s) => ({
           notifications: [
             n,
             ...(Array.isArray(s.notifications) ? s.notifications : []).filter((x) => x.id !== n.id),
           ],
-        })),
+        }));
+        notifyClientDataUpdated();
+      },
       hydrate: () => {
         if (typeof window === "undefined") return;
         const list = parseStoredArray<Notification>(
