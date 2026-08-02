@@ -7,7 +7,7 @@ import { useToolHandler } from "@/hooks/use-tool-handler";
 import { speakText, fetchWithRetry, voiceDebug, preloadVoices, resetSpeechVoice } from "@/lib/voice-client";
 import { runEmergencyStageSimulation } from "@/lib/emergency-flow";
 import { GRE_TEAM } from "@/lib/knowledge-base";
-import { getLocalGreeting } from "@/lib/local-assistant";
+import { getLocalGreeting, buildLocalChatResponse } from "@/lib/local-assistant";
 import type { ConversationContext, ConversationMessage, Lead, Notification } from "@/types";
 import { createInitialContext } from "@/types";
 
@@ -227,17 +227,14 @@ export function useRealtimeVoice() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      const sdpResponse = await fetch(
-        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
-        {
-          method: "POST",
-          body: offer.sdp,
-          headers: {
-            Authorization: `Bearer ${clientSecret}`,
-            "Content-Type": "application/sdp",
-          },
-        }
-      );
+      const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
+        method: "POST",
+        body: offer.sdp,
+        headers: {
+          Authorization: `Bearer ${clientSecret}`,
+          "Content-Type": "application/sdp",
+        },
+      });
 
       if (!sdpResponse.ok) return false;
 
@@ -268,23 +265,12 @@ export function useRealtimeVoice() {
   return { connect, disconnect };
 }
 
-/** Start STT without throwing if the engine is already running. */
-function safeStartRecognition(recognition: SpeechRecognition): boolean {
-  try {
-    recognition.start();
-    return true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/already started/i.test(msg)) return true;
-    throw err;
-  }
-}
-
 export function useFallbackVoice() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const isSpeakingRef = useRef(false);
   const isProcessingRef = useRef(false);
   const isGreetingRef = useRef(false);
+  const isRecognitionActiveRef = useRef(false);
   const { handleToolCall } = useToolHandler();
   const { addLead } = useLeadStore();
   const { addNotification } = useNotificationStore();
@@ -309,16 +295,45 @@ export function useFallbackVoice() {
     dismissEmergencyBanner,
   } = useVoiceStore();
 
+  const startRecognition = useCallback((): boolean => {
+    if (!recognitionRef.current || isGreetingRef.current || isSpeakingRef.current) {
+      return false;
+    }
+    try {
+      recognitionRef.current.start();
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/already started/i.test(msg)) {
+        isRecognitionActiveRef.current = true;
+        return true;
+      }
+      voiceDebug.error(`SpeechRecognition: ${msg}`, "speechRecognition");
+      return false;
+    }
+  }, []);
+
   const resumeListening = useCallback(() => {
-    if (!recognitionRef.current || isGreetingRef.current) return;
-    safeStartRecognition(recognitionRef.current);
-    setStatus("listening");
-  }, [setStatus]);
+    if (startRecognition()) {
+      setStatus("listening");
+    }
+  }, [setStatus, startRecognition]);
+
+  const stopRecognition = useCallback(() => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.stop();
+    } catch {
+      // ignore
+    }
+    isRecognitionActiveRef.current = false;
+  }, []);
 
   const speak = useCallback(
-    async (text: string) => {
+    async (text: string, options?: { skipResume?: boolean }) => {
       if (isMuted || !text.trim()) return;
       if (isSpeakingRef.current) return;
+      stopRecognition();
       isSpeakingRef.current = true;
       setStatus("speaking");
       try {
@@ -326,13 +341,12 @@ export function useFallbackVoice() {
         await speakText(text, language, isMuted, { demoMode });
       } finally {
         isSpeakingRef.current = false;
-        setStatus("listening");
-        if (!isGreetingRef.current) {
+        if (!options?.skipResume) {
           resumeListening();
         }
       }
     },
-    [isMuted, language, resumeListening, setStatus]
+    [isMuted, language, resumeListening, setStatus, stopRecognition]
   );
 
   const processUserInput = useCallback(
@@ -347,6 +361,7 @@ export function useFallbackVoice() {
 
       isProcessingRef.current = true;
 
+      stopRecognition();
       resetSpeechVoice();
       isSpeakingRef.current = false;
 
@@ -373,18 +388,55 @@ export function useFallbackVoice() {
       voiceDebug.setStage("openaiRequest", "loading");
       setError(null);
 
-      const { conversationContext, sessionId, language: lang } = useVoiceStore.getState();
+      const { conversationContext, sessionId, language: lang, isDemoMode } =
+        useVoiceStore.getState();
 
-      const result = await fetchWithRetry<ChatApiResponse>("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: chatMessages,
-          language: lang,
-          sessionId,
-          conversationContext,
-        }),
-      });
+      let result: { ok: boolean; status: number; data: ChatApiResponse; error?: string };
+
+      if (isDemoMode) {
+        voiceDebug.log("Demo mode: processing locally (no API call)");
+        const allMessages = useVoiceStore.getState().messages;
+        result = {
+          ok: true,
+          status: 200,
+          data: buildLocalChatResponse(
+            text,
+            chatMessages,
+            lang,
+            conversationContext,
+            allMessages
+          ),
+        };
+      } else {
+        result = await fetchWithRetry<ChatApiResponse>("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: chatMessages,
+            language: lang,
+            sessionId,
+            conversationContext,
+          }),
+        });
+
+        if (!result.ok || !result.data.reply) {
+          voiceDebug.log(
+            `Chat API unavailable (${result.error ?? "no reply"}) — using local engine`
+          );
+          const allMessages = useVoiceStore.getState().messages;
+          result = {
+            ok: true,
+            status: 200,
+            data: buildLocalChatResponse(
+              text,
+              chatMessages,
+              lang,
+              conversationContext,
+              allMessages
+            ),
+          };
+        }
+      }
 
       let responseText: string;
       let source = "local";
@@ -493,16 +545,6 @@ export function useFallbackVoice() {
       setError(null);
       setMode("fallback");
 
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.onend = null;
-          recognitionRef.current.stop();
-        } catch {
-          /* ignore */
-        }
-        recognitionRef.current = null;
-      }
-
       preloadVoices();
 
       const store = useVoiceStore.getState();
@@ -534,10 +576,33 @@ export function useFallbackVoice() {
         throw new Error("Speech recognition not supported in this browser. Try Chrome or Edge.");
       }
 
+      // Tear down any prior session to avoid "already started"
+      stopRecognition();
+      recognitionRef.current = null;
+      isRecognitionActiveRef.current = false;
+
+      // Ensure mic permission before SpeechRecognition (Chrome requirement)
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        voiceDebug.setStage("microphone", "working");
+      } catch {
+        throw new Error(
+          "Microphone access denied. Allow mic for this site in browser settings, then reload."
+        );
+      }
+
       const recognition = new SpeechRecognitionAPI();
-      recognition.continuous = false;
+      recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = language === "ta" ? "ta-IN,en-IN" : "en-IN";
+      recognition.lang = language === "ta" ? "ta-IN" : "en-IN";
+
+      recognition.onstart = () => {
+        isRecognitionActiveRef.current = true;
+        voiceDebug.setStage("speechRecognition", "working");
+        voiceDebug.log("SpeechRecognition listening");
+        setStatus("listening");
+      };
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         let interim = "";
@@ -578,22 +643,34 @@ export function useFallbackVoice() {
         } else if (event.error !== "no-speech" && event.error !== "aborted") {
           voiceDebug.log(`SpeechRecognition: ${event.error}`);
         }
+        if (event.error !== "aborted") {
+          isRecognitionActiveRef.current = false;
+        }
       };
 
       recognition.onend = () => {
+        isRecognitionActiveRef.current = false;
         const { conversationContext } = useVoiceStore.getState();
         if (
-          recognitionRef.current &&
-          conversationContext.state !== "SESSION_CLOSED" &&
-          !isGreetingRef.current
+          recognitionRef.current !== recognition ||
+          conversationContext.state === "SESSION_CLOSED" ||
+          isGreetingRef.current ||
+          isSpeakingRef.current ||
+          isProcessingRef.current
         ) {
-          safeStartRecognition(recognitionRef.current);
+          return;
         }
+        // Brief delay avoids start-during-end race in Chrome
+        window.setTimeout(() => {
+          if (recognitionRef.current === recognition && !isRecognitionActiveRef.current) {
+            startRecognition();
+          }
+        }, 250);
       };
 
       recognitionRef.current = recognition;
 
-      const { messages, conversationContext } = useVoiceStore.getState();
+      const { messages } = useVoiceStore.getState();
       const shouldGreet = messages.length === 0;
 
       if (shouldGreet) {
@@ -614,15 +691,13 @@ export function useFallbackVoice() {
         });
         isGreetingRef.current = true;
         setStatus("speaking");
-        await speak(greetingText);
+        await speak(greetingText, { skipResume: true });
         isGreetingRef.current = false;
       }
 
-      safeStartRecognition(recognition);
-
-      voiceDebug.setStage("microphone", "working");
-      voiceDebug.setStage("speechRecognition", "working");
-      setStatus("listening");
+      if (!startRecognition()) {
+        throw new Error("Could not start speech recognition. Click Restart and try again.");
+      }
 
       return true;
     } catch (err) {
@@ -636,6 +711,7 @@ export function useFallbackVoice() {
     addMessage,
     language,
     processUserInput,
+    resumeListening,
     setConversationContext,
     setDemoMode,
     setEmergency,
@@ -646,19 +722,21 @@ export function useFallbackVoice() {
     setStatus,
     setUserTranscript,
     speak,
+    stopRecognition,
+    startRecognition,
   ]);
 
   const disconnect = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
+    stopRecognition();
+    recognitionRef.current = null;
     resetSpeechVoice();
+    isSpeakingRef.current = false;
     isGreetingRef.current = false;
     isProcessingRef.current = false;
+    isRecognitionActiveRef.current = false;
     setStatus("disconnected");
     voiceDebug.reset();
-  }, [setStatus]);
+  }, [setStatus, stopRecognition]);
 
   useEffect(() => () => disconnect(), [disconnect]);
 
@@ -690,8 +768,10 @@ export function useVoiceAssistant() {
       setError(null);
       const fallbackSuccess = await fallback.connect();
       if (!fallbackSuccess) {
-        const detail = useVoiceStore.getState().error;
-        setError(detail || "Unable to connect. Please try again.");
+        const existing = useVoiceStore.getState().error;
+        if (!existing) {
+          setError("Unable to connect. Please try Restart or use Chrome/Edge.");
+        }
         setStatus("error");
       }
       return;
@@ -708,8 +788,10 @@ export function useVoiceAssistant() {
     setError(null);
     const fallbackSuccess = await fallback.connect();
     if (!fallbackSuccess) {
-      const detail = useVoiceStore.getState().error;
-      setError(detail || "Unable to connect. Please try again.");
+      const existing = useVoiceStore.getState().error;
+      if (!existing) {
+        setError("Unable to connect. Please try Restart or use Chrome/Edge.");
+      }
       setStatus("error");
     }
   }, [realtime, fallback, setDemoMode, setMode, setError, setStatus]);

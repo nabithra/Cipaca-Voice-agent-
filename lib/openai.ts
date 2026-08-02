@@ -67,27 +67,61 @@ export interface ChatResult {
 export async function createRealtimeSession(
   language: "en" | "ta" = "en"
 ): Promise<{ clientSecret: string; expiresAt: number }> {
-  const openai = getOpenAIClient();
-  const { AI_TOOLS } = await import("@/lib/tools");
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || apiKey.includes("your-openai")) {
+    throw new Error("OPENAI_API_KEY is not configured");
+  }
 
-  const session = await openai.beta.realtime.sessions.create({
-    model: "gpt-4o-realtime-preview-2024-12-17",
-    voice: "alloy",
-    modalities: ["text", "audio"],
-    instructions: `${CIPACA_SYSTEM_PROMPT}\n\n${getLanguageInstruction(language)}`,
-    input_audio_transcription: { model: "whisper-1" },
-    turn_detection: {
-      type: "server_vad",
-      threshold: 0.5,
-      prefix_padding_ms: 300,
-      silence_duration_ms: 700,
+  const { AI_TOOLS } = await import("@/lib/tools");
+  const instructions = `${CIPACA_SYSTEM_PROMPT}\n\n${getLanguageInstruction(language)}`;
+
+  const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
     },
-    tools: AI_TOOLS.map((t) => ({ ...t, type: "function" as const })),
+    body: JSON.stringify({
+      session: {
+        type: "realtime",
+        model: "gpt-realtime",
+        instructions,
+        audio: {
+          output: { voice: "alloy" },
+        },
+        tools: AI_TOOLS.map((t) => ({ ...t, type: "function" as const })),
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 700,
+        },
+      },
+    }),
   });
 
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Realtime client_secrets failed (${response.status})`);
+  }
+
+  const data = (await response.json()) as {
+    value?: string;
+    expires_at?: number;
+    client_secret?: { value?: string; expires_at?: number };
+  };
+
+  const clientSecret = data.value ?? data.client_secret?.value;
+  if (!clientSecret) {
+    throw new Error("Realtime client_secrets response missing token");
+  }
+
   return {
-    clientSecret: session.client_secret.value,
-    expiresAt: session.client_secret.expires_at,
+    clientSecret,
+    expiresAt:
+      data.expires_at ??
+      data.client_secret?.expires_at ??
+      Math.floor(Date.now() / 1000) + 600,
   };
 }
 

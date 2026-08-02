@@ -39,6 +39,6 @@ export async function GET() {
   return NextResponse.json({
     available: isOpenAIConfigured(),
     mode: "realtime",
-    model: "gpt-4o-realtime-preview-2024-12-17",
+    model: "gpt-realtime",
   });
 }

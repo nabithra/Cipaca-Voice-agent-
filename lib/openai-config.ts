@@ -5,5 +5,6 @@ export function isOpenAIConfigured(): boolean {
 
 /** True when no paid OpenAI API is available — app runs on built-in demo assistant. */
 export function isDemoMode(): boolean {
+  if (process.env.VOICE_FORCE_FALLBACK === "true") return true;
   return !isOpenAIConfigured();
 }
