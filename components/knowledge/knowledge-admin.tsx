@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BookOpen, RotateCcw, Save, Search } from "lucide-react";
+import { BookOpen, RotateCcw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getKnowledge, resetKnowledge, updateKnowledge } from "@/server/actions/knowledge";
+import { getKnowledge, resetKnowledge } from "@/server/actions/knowledge";
 import { KNOWLEDGE_STORAGE_KEY } from "@/lib/constants";
 import type { KnowledgeBase, KnowledgeBaseEntry } from "@/types";
 
@@ -33,19 +32,16 @@ function saveKnowledgeToStorage(kb: KnowledgeBase): void {
 export function KnowledgeAdminView() {
   const [kb, setKb] = useState<KnowledgeBase | null>(null);
   const [search, setSearch] = useState("");
-  const [jsonEdit, setJsonEdit] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     const cached = readKnowledgeFromStorage();
     if (cached) {
       setKb(cached);
-      setJsonEdit(JSON.stringify(cached, null, 2));
       return;
     }
     getKnowledge().then((data) => {
       setKb(data);
-      setJsonEdit(JSON.stringify(data, null, 2));
       saveKnowledgeToStorage(data);
     });
   }, []);
@@ -55,27 +51,20 @@ export function KnowledgeAdminView() {
       (e) =>
         !search ||
         e.title.toLowerCase().includes(search.toLowerCase()) ||
-        e.content.toLowerCase().includes(search.toLowerCase())
+        e.content.toLowerCase().includes(search.toLowerCase()) ||
+        e.tags.some((t) => t.toLowerCase().includes(search.toLowerCase()))
     );
 
-  const handleSave = async () => {
-    try {
-      const parsed = JSON.parse(jsonEdit) as KnowledgeBase;
-      saveKnowledgeToStorage(parsed);
-      await updateKnowledge(parsed);
-      setKb(parsed);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch {
-      alert("Invalid JSON format");
-    }
-  };
-
   const handleReset = async () => {
-    const { kb: defaultKb } = await resetKnowledge();
-    saveKnowledgeToStorage(defaultKb);
-    setKb(defaultKb);
-    setJsonEdit(JSON.stringify(defaultKb, null, 2));
+    if (!confirm("Reset all knowledge base entries to hospital defaults?")) return;
+    setResetting(true);
+    try {
+      const { kb: defaultKb } = await resetKnowledge();
+      saveKnowledgeToStorage(defaultKb);
+      setKb(defaultKb);
+    } finally {
+      setResetting(false);
+    }
   };
 
   if (!kb) {
@@ -105,16 +94,14 @@ export function KnowledgeAdminView() {
               <BookOpen className="h-8 w-8 text-primary" />
               Knowledge Base
             </h1>
-            <p className="text-muted-foreground mt-1">Manage verified hospital information</p>
+            <p className="text-muted-foreground mt-1">
+              Browse verified hospital information used by the voice assistant
+            </p>
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleReset}>
-              <RotateCcw className="h-4 w-4 mr-2" /> Reset
-            </Button>
-            <Button onClick={handleSave}>
-              <Save className="h-4 w-4 mr-2" /> {saved ? "Saved!" : "Save JSON"}
-            </Button>
-          </div>
+          <Button variant="outline" onClick={handleReset} disabled={resetting}>
+            <RotateCcw className="h-4 w-4 mr-2" />
+            {resetting ? "Resetting…" : "Reset to defaults"}
+          </Button>
         </div>
 
         <Card className="glass-card">
@@ -137,57 +124,59 @@ export function KnowledgeAdminView() {
         <div className="relative max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search knowledge base..."
+            placeholder="Search departments, doctors, services…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
           />
         </div>
 
-        <Tabs defaultValue="browse">
-          <TabsList>
-            <TabsTrigger value="browse">Browse</TabsTrigger>
-            <TabsTrigger value="json">Edit JSON</TabsTrigger>
-          </TabsList>
-          <TabsContent value="browse" className="space-y-4">
-            {sections.map(({ key, label, data }) => (
+        <div className="space-y-4">
+          {sections.map(({ key, label, data }) => {
+            const filtered = filterEntries(data);
+            if (search && filtered.length === 0) return null;
+            return (
               <Card key={key} className="glass-card">
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">{label}</CardTitle>
+                  <CardTitle className="text-base flex items-center justify-between">
+                    <span>{label}</span>
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {filtered.length} {filtered.length === 1 ? "entry" : "entries"}
+                    </span>
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-3">
-                    {filterEntries(data).map((entry) => (
-                      <div key={entry.id} className="rounded-lg border border-border/50 p-3">
-                        <p className="font-medium text-sm">{entry.title}</p>
-                        <p className="text-sm text-muted-foreground mt-1">{entry.content}</p>
-                        <div className="flex gap-1 mt-2">
-                          {entry.tags.map((t) => (
-                            <span key={t} className="text-xs bg-muted px-2 py-0.5 rounded-full">
-                              {t}
-                            </span>
-                          ))}
+                  {filtered.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-2">No entries in this section.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {filtered.map((entry) => (
+                        <div key={entry.id} className="rounded-lg border border-border/50 p-3">
+                          <p className="font-medium text-sm">{entry.title}</p>
+                          <p className="text-sm text-muted-foreground mt-1 whitespace-pre-wrap">
+                            {entry.content}
+                          </p>
+                          {entry.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {entry.tags.map((t) => (
+                                <span
+                                  key={t}
+                                  className="text-xs bg-muted px-2 py-0.5 rounded-full"
+                                >
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
-            ))}
-          </TabsContent>
-          <TabsContent value="json">
-            <Card className="glass-card">
-              <CardContent className="p-4">
-                <textarea
-                  value={jsonEdit}
-                  onChange={(e) => setJsonEdit(e.target.value)}
-                  className="w-full h-[500px] font-mono text-xs bg-muted/50 rounded-xl p-4 border border-border resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                  spellCheck={false}
-                />
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
