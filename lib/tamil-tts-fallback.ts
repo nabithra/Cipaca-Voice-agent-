@@ -208,7 +208,7 @@ const PHRASE_TANGLISH: [string, string][] = [
   ["\u0b8e\u0ba8\u0bcd\u0ba4", "entha"],
   ["\u0b85\u0bb2\u0bcd\u0bb2\u0ba4\u0bc1", "allathu"],
   ["\u0b95\u0bcd\u0b95\u0bc1", "ku"],
-  ["\u0b90", "ai"],
+  ["\u0b90", ""],
   ["\u0bae\u0bb1\u0bcd\u0bb1\u0bc1\u0bae\u0bcd", "matrum"],
   ["\u0b86\u0b95\u0bbf\u0baf\u0bc1\u0bb3\u0bcd\u0bb3\u0ba4\u0bc1", "aagiyulladhu"],
   ["\u0b95\u0bbe\u0bb2\u0bcd \u0b9a\u0bc6\u0baf\u0bcd\u0bb5\u0bbe\u0bb0\u0bcd\u0b95\u0bb3\u0bcd", "phone pannuvanga"],
@@ -278,19 +278,15 @@ const PHRASE_TANGLISH: [string, string][] = [
   ["\u0b95\u0bbf\u0bb1\u0bcd\u0b95\u0bbf\u0bb1\u0bc7\u0ba9\u0bcd", "kirkiren"],
 ];
 
-/** Latin tokens → clearer pronunciation for en-IN voices */
+/** Latin tokens → speakable words for en-IN voices (avoid letter-by-letter spelling). */
 const LATIN_TTS_HINTS: [RegExp, string][] = [
   [/\bCIPACA\b/gi, "Sipaka"],
   [/\bcipaca\b/g, "Sipaka"],
   [/\bThiruvannamalai\b/gi, "Thiruvannamalai"],
-  [/\bMRI\b/g, "M R I"],
-  [/\bCT\b/g, "C T"],
-  [/\bECG\b/g, "E C G"],
-  [/\bGRE\b/g, "G R E"],
-  [/\bAI\b/gi, "A I"],
-  [/\bAPT-/g, "A P T "],
-  [/\bEMG-/g, "E M G "],
-  [/\bDIAG-/g, "D I A G "],
+  [/\bAPT-/gi, ""],
+  [/\bEMG-/gi, ""],
+  [/\bDIAG-/gi, ""],
+  [/\bADM-/gi, ""],
   [/\bconfirm\b/gi, "verify"],
   [/\bkanparma\b/gi, "verify"],
   [/\bkanfirm\b/gi, "verify"],
@@ -409,6 +405,11 @@ function polishTanglish(text: string): string {
     .replace(/\bdetails verify panna team call pannuvanga\b/gi, "team phone pannitu details verify pannuvanga")
     .replace(/\bcipaca thiruvannamalai ai call pannadhaarku nandri\b/gi, "Thank you for calling Sipaka Thiruvannamalai")
     .replace(/\bSipaka Thiruvannamalai A I call pannadhaarku nandri\b/gi, "Thank you for calling Sipaka Thiruvannamalai")
+    .replace(/\bai receptionist\b/gi, "receptionist")
+    .replace(/\bteam ai connect\b/gi, "team connect")
+    .replace(/\bdoctor ai paarkka\b/gi, "doctor ah paarka")
+    .replace(/\bPriya ai connect\b/gi, "Priya connect")
+    .replace(/-\s+/g, " ")
     .replace(/\bviraivil\b/gi, "seekirama")
     .replace(/\bkondadhaarku\b/gi, "call pannadhaarku")
     .replace(/\s+,/g, ",");
@@ -421,8 +422,6 @@ function optimizeForIndianEnglishTts(text: string): string {
   }
   return result
     .replace(/-+/g, " ")
-    .replace(/([a-zA-Z])(\d)/g, "$1 $2")
-    .replace(/(\d)([a-zA-Z])/g, "$1 $2")
     .replace(/\s+/g, " ")
     .replace(/\s+([,.?!])/g, "$1")
     .trim();
