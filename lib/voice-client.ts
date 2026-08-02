@@ -248,6 +248,15 @@ function pickVoice(
   return { voice: undefined, lang: "en-IN", tamilRomanFallback: false };
 }
 
+function prepareCloudSpeechText(text: string, language: Language): string {
+  if (language !== "ta") {
+    return prepareForSpeech(sanitizeForTts(text, language));
+  }
+  return prepareForSpeech(
+    transliterateForTamilTts(sanitizeForTts(text, language))
+  );
+}
+
 function prepareBrowserSpeechText(
   text: string,
   language: Language,
@@ -273,7 +282,7 @@ export async function speakText(
   language: Language,
   isMuted: boolean,
   options?: { demoMode?: boolean }
-): Promise<"openai" | "browser" | "skipped"> {
+): Promise<"openai" | "cloud" | "browser" | "skipped"> {
   if (isMuted || !text.trim()) return "skipped";
 
   const generation = ++speakGeneration;
@@ -282,53 +291,60 @@ export async function speakText(
 
   await ensureVoicesLoaded(language === "ta" ? "ta" : "en");
   const { voice, lang, tamilRomanFallback } = pickVoice(text, language);
-  const speechText = prepareBrowserSpeechText(text, language, tamilRomanFallback);
-  if (!speechText.trim()) return "skipped";
+  const cloudText = prepareCloudSpeechText(text, language);
+  const browserText = prepareBrowserSpeechText(text, language, tamilRomanFallback);
+  if (!cloudText.trim() && !browserText.trim()) return "skipped";
 
   voiceDebug.setStage("tts", "loading");
   voiceDebug.log(
-    tamilRomanFallback
-      ? `TTS (Tamil→roman fallback): "${speechText.slice(0, 60)}..."`
-      : `TTS: speaking "${speechText.slice(0, 60)}..."`
+    language === "ta"
+      ? `TTS (cloud Tamil): "${cloudText.slice(0, 60)}..."`
+      : `TTS: speaking "${browserText.slice(0, 60)}..."`
   );
 
-  if (!options?.demoMode) {
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "tts", text: speechText, language }),
-      });
+  const serverText = language === "ta" ? cloudText : browserText;
 
-      if (generation !== speakGeneration) return "skipped";
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "tts", text: serverText, language }),
+    });
 
-      if (res.ok) {
-        const contentType = res.headers.get("content-type") ?? "";
-        if (contentType.includes("audio")) {
-          const blob = await res.blob();
-          if (blob.size > 0) {
-            const url = URL.createObjectURL(blob);
-            try {
-              await playAudioUrl(url, generation);
-            } finally {
-              URL.revokeObjectURL(url);
-            }
-            if (generation !== speakGeneration) return "skipped";
-            voiceDebug.setStage("tts", "working");
-            voiceDebug.setStage("speaker", "working");
-            return "openai";
+    if (generation !== speakGeneration) return "skipped";
+
+    if (res.ok) {
+      const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("audio")) {
+        const blob = await res.blob();
+        if (blob.size > 0) {
+          const url = URL.createObjectURL(blob);
+          try {
+            await playAudioUrl(url, generation);
+          } finally {
+            URL.revokeObjectURL(url);
           }
+          if (generation !== speakGeneration) return "skipped";
+          voiceDebug.setStage("tts", "working");
+          voiceDebug.setStage("speaker", "working");
+          return options?.demoMode ? "cloud" : "openai";
         }
       }
-    } catch (err) {
-      voiceDebug.log(`OpenAI TTS error: ${err instanceof Error ? err.message : "unknown"}`);
     }
+  } catch (err) {
+    voiceDebug.log(`Server TTS error: ${err instanceof Error ? err.message : "unknown"}`);
   }
 
   if (generation !== speakGeneration) return "skipped";
 
+  if (!browserText.trim()) return "skipped";
+
   voiceDebug.setStage("tts", "fallback");
-  voiceDebug.log("TTS: using browser speechSynthesis");
+  voiceDebug.log(
+    tamilRomanFallback
+      ? `TTS browser fallback (roman): "${browserText.slice(0, 60)}..."`
+      : "TTS: using browser speechSynthesis"
+  );
 
   if (voice) {
     voiceDebug.log(`TTS voice: ${voice.name} (${lang})`);
@@ -336,7 +352,7 @@ export async function speakText(
     voiceDebug.log("TTS: no voice object — using default en-IN for roman Tamil");
   }
 
-  const chunks = chunkForSpeech(speechText);
+  const chunks = chunkForSpeech(browserText);
   try {
     for (const chunk of chunks) {
       if (generation !== speakGeneration) return "skipped";

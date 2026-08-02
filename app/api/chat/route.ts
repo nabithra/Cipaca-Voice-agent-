@@ -6,6 +6,7 @@ import {
   isOpenAIConfigured,
   isDemoMode,
 } from "@/lib/openai";
+import { synthesizeCloudSpeech } from "@/lib/cloud-tts";
 import { saveAppointment, saveEmergency, saveLead, escalateToHuman } from "@/server/actions/leads";
 import type { ConversationContext, ConversationMessage, Lead, LeadCategory, InquiryType } from "@/types";
 import { createInitialContext } from "@/types";
@@ -67,29 +68,38 @@ export async function POST(request: NextRequest) {
 
     if (action === "tts") {
       const text = body.text as string;
+      const ttsLanguage = (body.language === "ta" ? "ta" : "en") as "en" | "ta";
       if (!text?.trim()) {
         return NextResponse.json({ error: "Missing text for TTS" }, { status: 400 });
       }
 
-      if (isDemoMode()) {
-        return NextResponse.json(
-          { fallback: "browser", demoMode: true },
-          { status: 503 }
-        );
+      if (!isDemoMode()) {
+        const openaiAudio = await synthesizeSpeech(text);
+        if (openaiAudio) {
+          console.log("[/api/chat] OpenAI TTS success", {
+            durationMs: Date.now() - startTime,
+          });
+          return new NextResponse(openaiAudio, {
+            headers: { "Content-Type": "audio/mpeg" },
+          });
+        }
       }
 
-      const audio = await synthesizeSpeech(text);
-      if (!audio) {
-        return NextResponse.json(
-          { fallback: "browser", openaiConfigured: isOpenAIConfigured() },
-          { status: 503 }
-        );
+      const cloudAudio = await synthesizeCloudSpeech(text, ttsLanguage);
+      if (cloudAudio) {
+        console.log("[/api/chat] Cloud TTS success", {
+          language: ttsLanguage,
+          durationMs: Date.now() - startTime,
+        });
+        return new NextResponse(cloudAudio, {
+          headers: { "Content-Type": "audio/mpeg" },
+        });
       }
 
-      console.log("[/api/chat] TTS success", { durationMs: Date.now() - startTime });
-      return new NextResponse(audio, {
-        headers: { "Content-Type": "audio/mpeg" },
-      });
+      return NextResponse.json(
+        { fallback: "browser", demoMode: isDemoMode() },
+        { status: 503 }
+      );
     }
 
     if (action === "search") {
