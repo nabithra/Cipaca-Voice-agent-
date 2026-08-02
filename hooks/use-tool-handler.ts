@@ -11,11 +11,7 @@ import { coordinateArrival } from "@/server/actions/arrival";
 import { searchKnowledge } from "@/server/actions/knowledge";
 import { routeCall } from "@/server/actions/gre";
 import { runEmergencyStageSimulation } from "@/lib/emergency-flow";
-import {
-  saveLeadToLocalStorage,
-  useLeadStore,
-  useVoiceStore,
-} from "@/lib/store";
+import { useLeadStore, useVoiceStore } from "@/lib/store";
 import type {
   ConversationMessage,
   EscalationReason,
@@ -104,7 +100,6 @@ export function useToolHandler() {
           });
           if (result.success && result.lead) {
             addLead(result.lead);
-            saveLeadToLocalStorage(result.lead);
           }
           return JSON.stringify(result);
         }
@@ -127,7 +122,6 @@ export function useToolHandler() {
           });
           if (result.success && result.lead) {
             addLead(result.lead);
-            saveLeadToLocalStorage(result.lead);
             setEmergency(true, result.ticketId);
             playEmergencyTone();
             advanceEmergencyStages(
@@ -182,7 +176,6 @@ export function useToolHandler() {
           });
           if (result.success && result.lead) {
             addLead(result.lead);
-            saveLeadToLocalStorage(result.lead);
           }
           return JSON.stringify(result);
         }
@@ -226,7 +219,6 @@ export function useToolHandler() {
           });
           if (result.success && result.lead) {
             addLead(result.lead);
-            saveLeadToLocalStorage(result.lead);
             setEscalating(true, result.escalationId);
             setGreAssigned(route.assignedTo);
           }

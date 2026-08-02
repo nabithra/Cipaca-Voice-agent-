@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 import type {
   ArrivalStage,
   ConnectionStatus,
@@ -194,6 +194,10 @@ function parseStoredArray<T>(stored: string | null, key?: string): T[] {
   try {
     const parsed = JSON.parse(stored) as T[] | Record<string, unknown>;
     if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === "object" && "state" in parsed) {
+      const state = (parsed as { state: Record<string, unknown> }).state;
+      if (key && Array.isArray(state?.[key])) return state[key] as T[];
+    }
     if (key && parsed && typeof parsed === "object" && Array.isArray(parsed[key])) {
       return parsed[key] as T[];
     }
@@ -201,6 +205,73 @@ function parseStoredArray<T>(stored: string | null, key?: string): T[] {
   } catch {
     return [];
   }
+}
+
+/** Zustand persist + legacy raw-array format written by older save helpers. */
+function createLegacyAwareStorage<S extends Record<string, unknown>>(
+  listKey: keyof S & string
+): PersistStorage<S> {
+  return {
+    getItem: (name) => {
+      if (typeof window === "undefined") return null;
+      const raw = localStorage.getItem(name);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          return { state: { [listKey]: parsed } as S, version: 0 };
+        }
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "state" in parsed &&
+          (parsed as StorageValue<S>).state
+        ) {
+          return parsed as StorageValue<S>;
+        }
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          listKey in parsed &&
+          Array.isArray((parsed as Record<string, unknown>)[listKey])
+        ) {
+          return { state: parsed as S, version: 0 };
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    },
+    setItem: (name, value) => {
+      localStorage.setItem(name, JSON.stringify(value));
+    },
+    removeItem: (name) => {
+      localStorage.removeItem(name);
+    },
+  };
+}
+
+function mergeById<T extends { id: string }>(local: T[], remote: T[]): T[] {
+  const merged = [...local];
+  for (const item of remote) {
+    if (!merged.find((m) => m.id === item.id)) merged.push(item);
+  }
+  return merged;
+}
+
+export function mergeLeads(local: Lead[], remote: Lead[]): Lead[] {
+  return mergeById(local, remote).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+}
+
+export function mergeNotifications(
+  local: Notification[],
+  remote: Notification[]
+): Notification[] {
+  return mergeById(local, remote).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
 }
 
 interface LeadStore {
@@ -228,7 +299,7 @@ export const useLeadStore = create<LeadStore>()(
         if (leads.length) set({ leads });
       },
     }),
-    { name: STORAGE_KEY, partialize: (state) => ({ leads: state.leads }) }
+    { name: STORAGE_KEY, partialize: (state) => ({ leads: state.leads }), storage: createLegacyAwareStorage<{ leads: Lead[] }>("leads") }
   )
 );
 
@@ -264,38 +335,10 @@ export const useNotificationStore = create<NotificationStore>()(
     {
       name: NOTIFICATIONS_STORAGE_KEY,
       partialize: (state) => ({ notifications: state.notifications }),
+      storage: createLegacyAwareStorage<{ notifications: Notification[] }>("notifications"),
     }
   )
 );
-
-export function saveLeadToLocalStorage(lead: Lead): void {
-  if (typeof window === "undefined") return;
-  try {
-    const leads = parseStoredArray<Lead>(localStorage.getItem(STORAGE_KEY), "leads");
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([lead, ...leads.filter((l) => l.id !== lead.id)])
-    );
-  } catch {
-    // ignore
-  }
-}
-
-export function saveNotificationToLocalStorage(notification: Notification): void {
-  if (typeof window === "undefined") return;
-  try {
-    const list = parseStoredArray<Notification>(
-      localStorage.getItem(NOTIFICATIONS_STORAGE_KEY),
-      "notifications"
-    );
-    localStorage.setItem(
-      NOTIFICATIONS_STORAGE_KEY,
-      JSON.stringify([notification, ...list.filter((n) => n.id !== notification.id)])
-    );
-  } catch {
-    // ignore
-  }
-}
 
 export function ensureNotificationArray(
   notifications: Notification[] | unknown

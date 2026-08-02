@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useLeadStore, useNotificationStore, ensureNotificationArray } from "@/lib/store";
+import { useLeadStore, useNotificationStore, ensureNotificationArray, mergeLeads, mergeNotifications } from "@/lib/store";
 import {
   computeDashboardStats,
   getCategoryBarData,
@@ -68,36 +68,48 @@ export function DashboardView() {
   const [filter, setFilter] = useState<LeadCategory | "all">("all");
 
   useEffect(() => {
-    hydrate();
-    hydrateNotifications();
+    const refreshFromStorage = () => {
+      hydrate();
+      hydrateNotifications();
+    };
+
+    refreshFromStorage();
+
     Promise.all([
-      fetch("/api/leads").then((r) => r.json()),
-      fetch("/api/notifications").then((r) => r.json()),
-    ])
-      .then(([serverLeads, serverNotifications]) => {
-        if (Array.isArray(serverLeads) && serverLeads.length > 0) {
-          const currentLeads = useLeadStore.getState().leads;
-          const merged = [...serverLeads];
-          currentLeads.forEach((l) => {
-            if (!merged.find((m: Lead) => m.id === l.id)) merged.push(l);
-          });
-          setLeads(
-            merged.sort(
-              (a: Lead, b: Lead) =>
-                new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      fetch("/api/leads")
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+      fetch("/api/notifications")
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []),
+    ]).then(([serverLeads, serverNotifications]) => {
+      const localLeads = useLeadStore.getState().leads;
+      const serverLeadList = Array.isArray(serverLeads) ? (serverLeads as Lead[]) : [];
+      setLeads(mergeLeads(localLeads, serverLeadList));
+
+      const localNotifications = useNotificationStore.getState().notifications;
+      const serverNotifList = Array.isArray(serverNotifications)
+        ? (serverNotifications as Notification[])
+        : Array.isArray(
+              (serverNotifications as { notifications?: Notification[] })?.notifications
             )
-          );
-        }
-        const notificationList = Array.isArray(serverNotifications)
-          ? serverNotifications
-          : Array.isArray((serverNotifications as { notifications?: Notification[] })?.notifications)
-            ? (serverNotifications as { notifications: Notification[] }).notifications
-            : [];
-        if (notificationList.length > 0) {
-          setNotifications(notificationList);
-        }
-      })
-      .catch(() => {});
+          ? (serverNotifications as { notifications: Notification[] }).notifications
+          : [];
+      setNotifications(mergeNotifications(localNotifications, serverNotifList));
+    });
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshFromStorage();
+    };
+    window.addEventListener("focus", refreshFromStorage);
+    window.addEventListener("storage", refreshFromStorage);
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.removeEventListener("focus", refreshFromStorage);
+      window.removeEventListener("storage", refreshFromStorage);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [hydrate, hydrateNotifications, setLeads, setNotifications]);
 
   const safeNotifications = ensureNotificationArray(notifications);

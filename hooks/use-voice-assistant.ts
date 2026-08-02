@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { useVoiceStore, saveLeadToLocalStorage, saveNotificationToLocalStorage, useNotificationStore } from "@/lib/store";
+import { useVoiceStore, useNotificationStore } from "@/lib/store";
 import { useLeadStore } from "@/lib/store";
 import { useToolHandler } from "@/hooks/use-tool-handler";
 import { speakText, fetchWithRetry, voiceDebug, preloadVoices, resetSpeechVoice } from "@/lib/voice-client";
@@ -457,20 +457,24 @@ export function useFallbackVoice() {
         }
 
         if (result.data.savedLead) {
-          addLead(result.data.savedLead);
-          saveLeadToLocalStorage(result.data.savedLead);
-          const notif = clientNotificationFromLead(result.data.savedLead);
+          const transcript = useVoiceStore.getState().messages;
+          const leadWithTranscript = {
+            ...result.data.savedLead,
+            conversation:
+              transcript.length > 0 ? transcript : result.data.savedLead.conversation,
+          };
+          addLead(leadWithTranscript);
+          const notif = clientNotificationFromLead(leadWithTranscript);
           addNotification(notif);
-          saveNotificationToLocalStorage(notif);
 
           if (result.data.savedLead.category === "Emergency") {
             const ticketId =
-              result.data.savedLead.ticketId ??
-              result.data.savedLead.referenceId ??
+              leadWithTranscript.ticketId ??
+              leadWithTranscript.referenceId ??
               undefined;
             setEmergency(true, ticketId);
             const gre =
-              result.data.savedLead.greAssigned ??
+              leadWithTranscript.greAssigned ??
               GRE_TEAM.find((g) => g.line === "emergency")?.name ??
               null;
             if (gre) setGreAssigned(gre);
@@ -485,10 +489,10 @@ export function useFallbackVoice() {
           if (result.data.savedLead.category === "Escalation") {
             setEscalating(
               true,
-              result.data.savedLead.escalationId ?? result.data.savedLead.referenceId
+              leadWithTranscript.escalationId ?? leadWithTranscript.referenceId
             );
-            if (result.data.savedLead.greAssigned) {
-              setGreAssigned(result.data.savedLead.greAssigned);
+            if (leadWithTranscript.greAssigned) {
+              setGreAssigned(leadWithTranscript.greAssigned);
             }
           }
         }
