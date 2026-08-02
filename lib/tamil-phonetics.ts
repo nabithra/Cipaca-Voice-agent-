@@ -90,3 +90,13 @@ export function hasLatinLoanwords(text: string): boolean {
 export function phoneticTamil(text: string): string {
   return transliterateForTamilTts(text);
 }
+
+/** Tamil-script loanwords → Latin (for English-voice TTS fallback). */
+export function tamilLoanwordsToLatin(text: string): string {
+  let result = text;
+  const reversed = [...LOANWORD_ENTRIES].sort((a, b) => b[1].length - a[1].length);
+  for (const [latin, tamil] of reversed) {
+    result = result.replace(new RegExp(tamil, "g"), latin);
+  }
+  return result;
+}

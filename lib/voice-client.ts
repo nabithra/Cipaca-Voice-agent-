@@ -2,7 +2,8 @@
 
 import type { Language } from "@/types";
 import { prepareForSpeech } from "@/lib/language-style";
-import { transliterateForTamilTts } from "@/lib/tamil-phonetics";
+import { transliterateForTamilTts, tamilLoanwordsToLatin } from "@/lib/tamil-phonetics";
+import { tamilToSpokenRoman } from "@/lib/tamil-tts-fallback";
 import { chunkForSpeech, sanitizeForTts } from "@/lib/tamil-input";
 
 export type PipelineStage =
@@ -132,7 +133,7 @@ async function ensureVoicesLoaded(preferLang: "en" | "ta"): Promise<void> {
       cachedVoices = window.speechSynthesis.getVoices();
       resolve();
     };
-    const timer = window.setTimeout(done, 800);
+    const timer = window.setTimeout(done, preferLang === "ta" ? 2500 : 800);
     window.speechSynthesis.onvoiceschanged = () => {
       window.clearTimeout(timer);
       done();
@@ -178,25 +179,91 @@ function getVoiceCandidates(text: string, language: Language): SpeechSynthesisVo
 }
 
 /** Pick one voice for the whole utterance — avoids per-chunk voice switching. */
-function pickVoice(text: string, language: Language): { voice?: SpeechSynthesisVoice; lang: string } {
-  if (sessionVoice && language === "ta" && !sessionVoice.lang.startsWith("ta")) {
+function pickVoice(
+  text: string,
+  language: Language
+): {
+  voice?: SpeechSynthesisVoice;
+  lang: string;
+  tamilRomanFallback: boolean;
+} {
+  if (sessionVoice) {
+    const isFallback = sessionVoiceLang === "en-IN-fallback";
+    const isTamilNative = sessionVoice.lang.toLowerCase().startsWith("ta");
+
+    if (language === "ta" && (isTamilNative || isFallback)) {
+      return {
+        voice: sessionVoice,
+        lang: isFallback ? "en-IN" : sessionVoice.lang,
+        tamilRomanFallback: isFallback,
+      };
+    }
+    if (language === "en" && !isTamilNative && !isFallback) {
+      return {
+        voice: sessionVoice,
+        lang: sessionVoiceLang || sessionVoice.lang,
+        tamilRomanFallback: false,
+      };
+    }
     sessionVoice = undefined;
     sessionVoiceLang = "";
   }
 
-  if (sessionVoice) {
-    return { voice: sessionVoice, lang: sessionVoiceLang || sessionVoice.lang };
+  if (language === "ta") {
+    const taCandidates = getVoiceCandidates(text, "ta");
+    if (taCandidates.length > 0) {
+      sessionVoice = taCandidates[0];
+      sessionVoiceLang = taCandidates[0].lang;
+      return { voice: sessionVoice, lang: sessionVoiceLang, tamilRomanFallback: false };
+    }
+
+    const enCandidates = getVoiceCandidates(text, "en");
+    const enVoice =
+      enCandidates.find((v) => v.lang === "en-IN") ??
+      enCandidates.find((v) => v.lang.startsWith("en")) ??
+      enCandidates[0];
+
+    if (enVoice) {
+      sessionVoice = enVoice;
+      sessionVoiceLang = "en-IN-fallback";
+      voiceDebug.log(
+        `No Tamil voice on this device — using ${enVoice.name} with romanized Tamil`
+      );
+      return { voice: enVoice, lang: "en-IN", tamilRomanFallback: true };
+    }
+
+    return { voice: undefined, lang: "en-IN", tamilRomanFallback: true };
   }
 
   const candidates = getVoiceCandidates(text, language);
   if (candidates.length > 0) {
     sessionVoice = candidates[0];
     sessionVoiceLang = candidates[0].lang;
-    return { voice: sessionVoice, lang: sessionVoiceLang };
+    return { voice: sessionVoice, lang: sessionVoiceLang, tamilRomanFallback: false };
   }
 
-  const lang = language === "ta" ? "ta-IN" : "en-IN";
-  return { voice: undefined, lang };
+  return { voice: undefined, lang: "en-IN", tamilRomanFallback: false };
+}
+
+function prepareBrowserSpeechText(
+  text: string,
+  language: Language,
+  tamilRomanFallback: boolean
+): string {
+  if (language !== "ta") {
+    return prepareForSpeech(sanitizeForTts(text, language));
+  }
+
+  const tamilScript = prepareForSpeech(
+    transliterateForTamilTts(sanitizeForTts(text, language))
+  );
+
+  if (!tamilRomanFallback) {
+    return tamilScript;
+  }
+
+  const withLatinLoanwords = tamilLoanwordsToLatin(tamilScript);
+  return prepareForSpeech(tamilToSpokenRoman(withLatinLoanwords));
 }
 
 export async function speakText(
@@ -211,14 +278,17 @@ export async function speakText(
   await cancelBrowserSpeech();
   if (generation !== speakGeneration) return "skipped";
 
-  const speechText =
-    language === "ta"
-      ? prepareForSpeech(transliterateForTamilTts(sanitizeForTts(text, language)))
-      : prepareForSpeech(sanitizeForTts(text, language));
+  await ensureVoicesLoaded(language === "ta" ? "ta" : "en");
+  const { voice, lang, tamilRomanFallback } = pickVoice(text, language);
+  const speechText = prepareBrowserSpeechText(text, language, tamilRomanFallback);
   if (!speechText.trim()) return "skipped";
 
   voiceDebug.setStage("tts", "loading");
-  voiceDebug.log(`TTS: speaking "${speechText.slice(0, 60)}..."`);
+  voiceDebug.log(
+    tamilRomanFallback
+      ? `TTS (Tamil→roman fallback): "${speechText.slice(0, 60)}..."`
+      : `TTS: speaking "${speechText.slice(0, 60)}..."`
+  );
 
   if (!options?.demoMode) {
     try {
@@ -258,11 +328,10 @@ export async function speakText(
   voiceDebug.setStage("tts", "fallback");
   voiceDebug.log("TTS: using browser speechSynthesis");
 
-  await ensureVoicesLoaded(language === "ta" ? "ta" : "en");
-
-  const { voice, lang } = pickVoice(speechText, language);
   if (voice) {
     voiceDebug.log(`TTS voice: ${voice.name} (${lang})`);
+  } else if (tamilRomanFallback) {
+    voiceDebug.log("TTS: no voice object — using default en-IN for roman Tamil");
   }
 
   const chunks = chunkForSpeech(speechText);
