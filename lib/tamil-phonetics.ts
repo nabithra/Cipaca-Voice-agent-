@@ -56,6 +56,14 @@ const LOANWORD_ENTRIES: [string, string][] = [
   ["date", "டேட்"],
   ["time", "டைம்"],
   ["high", "ஹை"],
+  ["cipaca", "சிபாகா"],
+  ["thiruvannamalai", "\u0ba4\u0bbf\u0bb0\u0bc1\u0bb5\u0ba9\u0bcd\u0ba9\u0bae\u0bb2\u0bc8"],
+  ["ai", "ஏஐ"],
+  ["mri", "எம்ஆர்ஐ"],
+  ["ct scan", "சிடி ஸ்கேன்"],
+  ["ecg", "ஈசிஜி"],
+  ["gre", "ஜி ஆர் ஈ"],
+  ["now", "நவ்"],
 ];
 
 /** Bare Latin loanwords that should not appear in Tamil-mode replies */
@@ -65,7 +73,11 @@ const BARE_LOANWORD_PATTERN =
 export function transliterateForTamilTts(text: string): string {
   let result = text;
   for (const [latin, tamil] of LOANWORD_ENTRIES) {
-    const re = new RegExp(latin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    const escaped = latin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re =
+      latin.length <= 3
+        ? new RegExp(`\\b${escaped}\\b`, "gi")
+        : new RegExp(escaped, "gi");
     result = result.replace(re, tamil);
   }
   return result.replace(/\s+/g, " ").trim();

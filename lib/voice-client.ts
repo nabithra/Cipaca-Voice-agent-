@@ -3,7 +3,7 @@
 import type { Language } from "@/types";
 import { prepareForSpeech } from "@/lib/language-style";
 import { transliterateForTamilTts } from "@/lib/tamil-phonetics";
-import { chunkForSpeech, preferTamilVoice, sanitizeForTts } from "@/lib/tamil-input";
+import { chunkForSpeech, sanitizeForTts } from "@/lib/tamil-input";
 
 export type PipelineStage =
   | "microphone"
@@ -103,6 +103,11 @@ class VoiceDebugBus {
 export const voiceDebug = new VoiceDebugBus();
 
 let cachedVoices: SpeechSynthesisVoice[] = [];
+/** Monotonic token — new speakText() invalidates in-flight browser TTS. */
+let speakGeneration = 0;
+/** Reuse one voice for all chunks in a single response. */
+let sessionVoice: SpeechSynthesisVoice | undefined;
+let sessionVoiceLang = "";
 
 /** Preload browser voices early to avoid first-speak delay. */
 export function preloadVoices(): void {
@@ -112,6 +117,14 @@ export function preloadVoices(): void {
   };
   load();
   window.speechSynthesis.onvoiceschanged = load;
+}
+
+function cancelBrowserSpeech(): Promise<void> {
+  if (typeof window === "undefined" || !window.speechSynthesis) {
+    return Promise.resolve();
+  }
+  window.speechSynthesis.cancel();
+  return new Promise((resolve) => setTimeout(resolve, 120));
 }
 
 function scoreVoice(v: SpeechSynthesisVoice, preferLang: "en" | "ta"): number {
@@ -134,14 +147,35 @@ function scoreVoice(v: SpeechSynthesisVoice, preferLang: "en" | "ta"): number {
 
 function getVoiceCandidates(text: string, language: Language): SpeechSynthesisVoice[] {
   const voices = cachedVoices.length ? cachedVoices : window.speechSynthesis.getVoices();
-  const preferLang: "en" | "ta" =
-    preferTamilVoice(text, language) ? "ta" : language === "ta" ? "en" : "en";
+  const preferLang: "en" | "ta" = language === "ta" ? "ta" : "en";
 
   return voices
     .map((v) => ({ v, s: scoreVoice(v, preferLang) }))
     .filter((x) => x.s >= 0)
     .sort((a, b) => b.s - a.s)
     .map((x) => x.v);
+}
+
+/** Pick one voice for the whole utterance — avoids per-chunk voice switching. */
+function pickVoice(text: string, language: Language): { voice?: SpeechSynthesisVoice; lang: string } {
+  if (sessionVoice && language === "ta" && !sessionVoice.lang.startsWith("ta")) {
+    sessionVoice = undefined;
+    sessionVoiceLang = "";
+  }
+
+  if (sessionVoice) {
+    return { voice: sessionVoice, lang: sessionVoiceLang || sessionVoice.lang };
+  }
+
+  const candidates = getVoiceCandidates(text, language);
+  if (candidates.length > 0) {
+    sessionVoice = candidates[0];
+    sessionVoiceLang = candidates[0].lang;
+    return { voice: sessionVoice, lang: sessionVoiceLang };
+  }
+
+  const lang = language === "ta" ? "ta-IN" : "en-IN";
+  return { voice: undefined, lang };
 }
 
 export async function speakText(
@@ -151,6 +185,10 @@ export async function speakText(
   options?: { demoMode?: boolean }
 ): Promise<"openai" | "browser" | "skipped"> {
   if (isMuted || !text.trim()) return "skipped";
+
+  const generation = ++speakGeneration;
+  await cancelBrowserSpeech();
+  if (generation !== speakGeneration) return "skipped";
 
   const speechText =
     language === "ta"
@@ -169,15 +207,24 @@ export async function speakText(
         body: JSON.stringify({ action: "tts", text: speechText, language }),
       });
 
+      if (generation !== speakGeneration) return "skipped";
+
       if (res.ok) {
-        const blob = await res.blob();
-        if (blob.size > 0) {
-          const url = URL.createObjectURL(blob);
-          await playAudioUrl(url);
-          URL.revokeObjectURL(url);
-          voiceDebug.setStage("tts", "working");
-          voiceDebug.setStage("speaker", "working");
-          return "openai";
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("audio")) {
+          const blob = await res.blob();
+          if (blob.size > 0) {
+            const url = URL.createObjectURL(blob);
+            try {
+              await playAudioUrl(url, generation);
+            } finally {
+              URL.revokeObjectURL(url);
+            }
+            if (generation !== speakGeneration) return "skipped";
+            voiceDebug.setStage("tts", "working");
+            voiceDebug.setStage("speaker", "working");
+            return "openai";
+          }
         }
       }
     } catch (err) {
@@ -185,13 +232,21 @@ export async function speakText(
     }
   }
 
+  if (generation !== speakGeneration) return "skipped";
+
   voiceDebug.setStage("tts", "fallback");
   voiceDebug.log("TTS: using browser speechSynthesis");
+
+  const { voice, lang } = pickVoice(speechText, language);
+  if (voice) {
+    voiceDebug.log(`TTS voice: ${voice.name} (${lang})`);
+  }
 
   const chunks = chunkForSpeech(speechText);
   try {
     for (const chunk of chunks) {
-      const ok = await speakChunkWithFallback(chunk, language);
+      if (generation !== speakGeneration) return "skipped";
+      const ok = await speakOnce(chunk, voice, lang, generation);
       if (!ok) {
         voiceDebug.log("TTS skipped — text shown on screen, voice continues");
         voiceDebug.setStage("tts", "fallback");
@@ -199,6 +254,7 @@ export async function speakText(
         return "skipped";
       }
     }
+    if (generation !== speakGeneration) return "skipped";
     voiceDebug.setStage("tts", "working");
     voiceDebug.setStage("speaker", "working");
     return "browser";
@@ -209,22 +265,56 @@ export async function speakText(
   }
 }
 
-function playAudioUrl(url: string): Promise<void> {
+/** Clear cached voice (e.g. on disconnect or language change). */
+export function resetSpeechVoice(): void {
+  sessionVoice = undefined;
+  sessionVoiceLang = "";
+  speakGeneration++;
+  void cancelBrowserSpeech();
+}
+
+function playAudioUrl(url: string, generation: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const audio = new Audio(url);
-    audio.onended = () => resolve();
-    audio.onerror = () => reject(new Error("Audio playback failed"));
-    audio.play().catch(reject);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearInterval(check);
+      resolve();
+    };
+
+    const check = setInterval(() => {
+      if (generation !== speakGeneration) {
+        audio.pause();
+        finish();
+      }
+    }, 100);
+
+    audio.onended = finish;
+    audio.onerror = () => {
+      clearInterval(check);
+      reject(new Error("Audio playback failed"));
+    };
+    audio.play().catch((err) => {
+      clearInterval(check);
+      reject(err);
+    });
   });
 }
 
 function speakOnce(
   text: string,
   voice: SpeechSynthesisVoice | undefined,
-  lang: string
+  lang: string,
+  generation: number
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    if (!window.speechSynthesis) {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      resolve(false);
+      return;
+    }
+    if (generation !== speakGeneration) {
       resolve(false);
       return;
     }
@@ -237,53 +327,36 @@ function speakOnce(
     if (voice) utterance.voice = voice;
 
     let settled = false;
+    let started = false;
+
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
       resolve(ok);
     };
 
-    utterance.onend = () => finish(true);
-    utterance.onerror = () => finish(false);
-
-    // Chrome pause/resume hack — prevents stuck synthesis queue
-    window.speechSynthesis.cancel();
-    setTimeout(() => {
-      window.speechSynthesis.speak(utterance);
-    }, 50);
-
-    setTimeout(() => finish(false), 15000);
-  });
-}
-
-async function speakChunkWithFallback(text: string, language: Language): Promise<boolean> {
-  if (typeof window === "undefined" || !window.speechSynthesis) return false;
-
-  const candidates = getVoiceCandidates(text, language);
-  const useTamil = preferTamilVoice(text, language);
-
-  const attempts: { voice?: SpeechSynthesisVoice; lang: string }[] = [];
-
-  for (const v of candidates.slice(0, 3)) {
-    attempts.push({ voice: v, lang: v.lang });
-  }
-  if (useTamil) {
-    attempts.push({ lang: "ta-IN" });
-  }
-  attempts.push({ lang: language === "ta" ? "en-IN" : "en-IN" });
-  attempts.push({ lang: "en-US" });
-
-  for (const attempt of attempts) {
-    const ok = await speakOnce(text, attempt.voice, attempt.lang);
-    if (ok) {
-      if (attempt.voice) {
-        voiceDebug.log(`TTS voice: ${attempt.voice.name} (${attempt.lang})`);
+    utterance.onstart = () => {
+      started = true;
+    };
+    utterance.onend = () => finish(started);
+    utterance.onerror = (event) => {
+      // Ignore "interrupted" when a newer speakText cancelled this one
+      if (generation !== speakGeneration) {
+        finish(false);
+        return;
       }
-      return true;
-    }
-  }
+      const err = (event as SpeechSynthesisErrorEvent).error;
+      if (started && err === "interrupted") {
+        finish(true);
+        return;
+      }
+      finish(started);
+    };
 
-  return false;
+    window.speechSynthesis.speak(utterance);
+
+    setTimeout(() => finish(started), 30000);
+  });
 }
 
 export async function fetchWithRetry<T>(

@@ -36,6 +36,12 @@ export function normalizeForClassification(text: string): string {
   if (/appointment book|book pann|pannanum|apointment/i.test(t)) {
     hints += " appointment book";
   }
+  if (/want.*(?:mri|scan)|take.*(?:mri|scan)|need.*(?:mri|scan)|get.*(?:mri|scan)|mri\s*scan|scan\s*(?:booking|book|venum|edukanum|pannanum)/i.test(t)) {
+    hints += " scan booking mri";
+  }
+  if (/scan.*(?:venum|edukanum|pannanum|edukka)|edukanum.*scan|ஸ்கேன்.*(?:எடு|வேணும்|பண்ண)/i.test(t)) {
+    hints += " scan booking mri";
+  }
 
   return `${t} ${hints}`.trim();
 }

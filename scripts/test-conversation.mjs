@@ -206,4 +206,71 @@ if (/name|peru/i.test(mid.reply) && ctx.currentStep !== "ask_name") {
 }
 console.log("✓ Context memory passed");
 
+// --- Name extraction ---
+console.log("\n=== NAME EXTRACTION ===");
+resetSession();
+await send("Appointment");
+await send("my name is Priya");
+if (ctx.name !== "Priya") {
+  console.error("Expected name 'Priya', got:", ctx.name);
+  process.exit(1);
+}
+console.log("✓ Name extraction passed");
+
+// --- Doctor list during active workflow ---
+console.log("\n=== DOCTOR LIST DURING WORKFLOW ===");
+resetSession();
+await send("Appointment");
+await send("Ravi");
+await send("9876543210");
+await send("Neurology");
+const docList = await send("list of doctors in neurology dept");
+if (!/Karthik|Meera|Neurologist/i.test(docList.reply)) {
+  console.error("Expected neurology doctor info:", docList.reply);
+  process.exit(1);
+}
+if (ctx.currentStep !== "ask_doctor") {
+  console.error("Workflow should stay on ask_doctor, got:", ctx.currentStep);
+  process.exit(1);
+}
+console.log("✓ Doctor list during workflow passed");
+
+// --- Doctor list without dept in query (uses workflow context) ---
+console.log("\n=== DOCTOR LIST BY CONTEXT ===");
+resetSession();
+await send("Appointment");
+await send("Meena");
+await send("9000000002");
+await send("Neurology");
+const docNames = await send("Can you please list out the doctors name?");
+if (!/Karthik|Meera|Neurologist/i.test(docNames.reply)) {
+  console.error("Expected neurology doctors from context:", docNames.reply);
+  process.exit(1);
+}
+if (/X-Ray|Radiology|MRI, CT/i.test(docNames.reply)) {
+  console.error("Should not return radiology for doctor list:", docNames.reply);
+  process.exit(1);
+}
+console.log("✓ Doctor list by context passed");
+
+// --- MRI scan intent ---
+console.log("\n=== MRI SCAN INTENT ===");
+resetSession();
+const mri = await send("I want to take a mri scan");
+if (ctx.currentWorkflow !== "diagnostic") {
+  console.error("Expected diagnostic workflow for MRI", ctx);
+  process.exit(1);
+}
+console.log("✓ MRI scan intent passed");
+
+// --- Tamil MRI (ta mode) ---
+console.log("\n=== TAMIL MRI SCAN ===");
+resetSession("ta");
+const taMri = await send("I want to take a mri scan", "ta");
+if (ctx.currentWorkflow !== "diagnostic") {
+  console.error("Expected diagnostic workflow in Tamil mode", ctx);
+  process.exit(1);
+}
+console.log("✓ Tamil MRI scan passed");
+
 console.log("\n✅ All conversation flows passed");

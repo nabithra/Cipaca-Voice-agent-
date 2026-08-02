@@ -21,7 +21,6 @@ import { LanguageSelector } from "@/components/voice/language-selector";
 import { EmergencyMode } from "@/components/voice/emergency-mode";
 import { ArrivalTimeline } from "@/components/voice/arrival-timeline";
 import { EscalationOverlay } from "@/components/voice/escalation-overlay";
-import { DebugPanel } from "@/components/voice/debug-panel";
 import { useVoiceAssistant } from "@/hooks/use-voice-assistant";
 import { useVoiceStore } from "@/lib/store";
 
@@ -60,14 +59,16 @@ export function VoiceInterface() {
 
   const handleStart = useCallback(async () => {
     if (!languageSelected) return;
+    resetConversation(language);
     await connect();
-  }, [connect, languageSelected]);
+  }, [connect, language, languageSelected, resetConversation]);
 
   const handleMicClick = async () => {
     if (isActive) {
       disconnect();
       resetConversation(language);
     } else if (languageSelected) {
+      resetConversation(language);
       await connect();
     }
   };
@@ -113,8 +114,6 @@ export function VoiceInterface() {
         escalationId={escalationId}
         greAssigned={greAssigned}
       />
-
-      <DebugPanel />
 
       <div className="container mx-auto px-4 py-8">
         {!languageSelected && !isActive ? (
@@ -173,7 +172,8 @@ export function VoiceInterface() {
                       <div className="rounded-xl bg-muted/50 p-4">
                         <p className="text-xs font-medium text-muted-foreground mb-2">AI Response</p>
                         <p className="text-sm min-h-[2rem]">
-                          {aiTranscript || (
+                          {aiTranscript ||
+                            messages.filter((m) => m.role === "assistant").slice(-1)[0]?.content || (
                             <span className="text-muted-foreground italic">
                               {isSpeaking ? "Speaking..." : "—"}
                             </span>

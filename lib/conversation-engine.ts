@@ -7,11 +7,17 @@ import type {
   WorkflowType,
 } from "@/types";
 import { createInitialContext } from "@/types";
-import { classifyCall, isEscalationRequest, looksLikeQuestion } from "@/lib/classification";
+import { classifyCall, isEscalationRequest, isWorkflowSideQuestion, looksLikeQuestion } from "@/lib/classification";
 import { normalizeForClassification } from "@/lib/tamil-input";
-import { searchKnowledgeBase } from "@/lib/knowledge-base";
-import { GRE_TEAM } from "@/lib/knowledge-base";
+import {
+  searchKnowledgeBase,
+  DEFAULT_KNOWLEDGE_BASE,
+  GRE_TEAM,
+  getDoctorsForDepartment,
+  isDoctorListQuery,
+} from "@/lib/knowledge-base";
 import { matchDepartment } from "@/lib/department-match";
+import { extractPersonName, extractPhoneNumber } from "@/lib/name-extract";
 import * as L from "@/lib/language-style";
 
 export type { ConversationContext };
@@ -69,6 +75,9 @@ export interface WorkflowDebugInfo {
 
 const GOODBYE_PATTERNS =
   /^(no|nothing|nope|that'?s all|that is all|thank you|thanks|thank|bye|goodbye|good bye|see you|ok bye|okay bye|namaste|நன்றி|போதும்|இல்லை|இல்ல)[\s!.]*$/i;
+
+const GREETING_ONLY =
+  /^(hi|hello|hey|howdy|good morning|good evening|good afternoon|namaste|vanakkam|வணக்கம்|ஹலோ|ஹாய்)[\s!.?,]*$/i;
 
 const ANYTHING_ELSE_NO =
   /^(no|nothing|nope|that'?s all|that is all|no thanks|i'?m good|all good|none|இல்லை|இல்ல|வேண்டாம்|போதும்)[\s!.]*$/i;
@@ -198,9 +207,9 @@ function storeStepAnswer(ctx: ConversationContext, text: string): ConversationCo
   const trimmed = text.trim();
   switch (ctx.currentStep) {
     case "ask_name":
-      return { ...ctx, name: trimmed };
+      return { ...ctx, name: extractPersonName(trimmed) };
     case "ask_phone":
-      return { ...ctx, phone: trimmed };
+      return { ...ctx, phone: extractPhoneNumber(trimmed) };
     case "ask_location":
       return { ...ctx, location: trimmed };
     case "ask_emergency_type":
@@ -319,6 +328,26 @@ function startWorkflow(
 function handleActiveWorkflow(ctx: ConversationContext, text: string): EngineResult {
   const workflow = ctx.currentWorkflow!;
   const lang = ctx.language;
+
+  // Answer hospital info questions without losing workflow progress
+  if (isWorkflowSideQuestion(text)) {
+    let answer: string;
+    if (ctx.currentStep === "ask_doctor" && ctx.department && isDoctorListQuery(text)) {
+      answer = getDoctorsForDepartment(ctx.department);
+    } else {
+      answer = searchKnowledgeBase(text, DEFAULT_KNOWLEDGE_BASE, {
+        department: ctx.department,
+      });
+    }
+    if (!answer.includes("No specific information")) {
+      const snippet = L.formatKnowledgeSnippet(answer, lang);
+      const resume = questionForStep(ctx.currentStep, ctx);
+      return {
+        reply: L.resumeWorkflowPrompt(snippet, resume, lang),
+        context: ctx,
+      };
+    }
+  }
 
   // Confirm fuzzy department match
   if (ctx.pendingConfirm && ctx.currentStep === "ask_department") {
@@ -704,6 +733,13 @@ export function processConversationTurn(
 
   if (looksLikeQuestion(text)) {
     return handleFaq(ctx, text);
+  }
+
+  if (GREETING_ONLY.test(text.trim()) && ctx.workflowStatus !== "active") {
+    return {
+      reply: L.greetingFollowUp(lang),
+      context: { ...ctx, greeted: true, state: "CLASSIFICATION" },
+    };
   }
 
   return {

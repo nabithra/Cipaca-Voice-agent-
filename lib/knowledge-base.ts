@@ -1,4 +1,5 @@
 import type { KnowledgeBase, PilotUnit, TrainingDataset } from "@/types";
+import { matchDepartment } from "@/lib/department-match";
 
 export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = {
   visitingHours: "9:00 AM to 8:00 PM daily. Emergency services available 24/7.",
@@ -21,6 +22,8 @@ export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = {
     { id: "doc-anitha", category: "doctors", title: "Dr. Anitha Ravi", content: "Pediatrician. Mon-Sat 10 AM-5 PM. Pediatrics department.", tags: ["pediatrics"], updatedAt: "2026-01-15" },
     { id: "doc-lakshmi", category: "doctors", title: "Dr. Lakshmi Devi", content: "Gynecologist. Mon-Fri 11 AM-3 PM. Gynecology department.", tags: ["gynecology"], updatedAt: "2026-01-15" },
     { id: "doc-suresh", category: "doctors", title: "Dr. Suresh Babu", content: "General Physician. Daily 9 AM-6 PM. General Medicine.", tags: ["general"], updatedAt: "2026-01-15" },
+    { id: "doc-karthik", category: "doctors", title: "Dr. Karthik Subramanian", content: "Neurologist. Mon-Wed-Fri 10 AM-2 PM. Neurology department.", tags: ["neurology"], updatedAt: "2026-01-15" },
+    { id: "doc-meera", category: "doctors", title: "Dr. Meera Natarajan", content: "Neurologist. Tue-Thu-Sat 11 AM-3 PM. Neurology department.", tags: ["neurology"], updatedAt: "2026-01-15" },
   ],
   specialties: [
     { id: "spec-cardio", category: "specialties", title: "Cardiology", content: "Heart disease, hypertension, cardiac emergencies.", tags: ["heart"], updatedAt: "2026-01-15" },
@@ -60,24 +63,41 @@ export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = {
   ],
 };
 
-export function searchKnowledgeBase(query: string, kb: KnowledgeBase = DEFAULT_KNOWLEDGE_BASE): string {
+export function searchKnowledgeBase(
+  query: string,
+  kb: KnowledgeBase = DEFAULT_KNOWLEDGE_BASE,
+  options?: { department?: string }
+): string {
+  const base = kb ?? DEFAULT_KNOWLEDGE_BASE;
+  const doctorList = searchDoctorsInDepartment(query, base, options?.department);
+  if (doctorList) return doctorList;
+
+  // Doctor-list questions should not fall through to unrelated departments (e.g. Radiology)
+  if (isDoctorListQuery(query) && options?.department) {
+    return `No doctor list available for ${options.department} right now. Our team can help you choose a specialist when you book.`;
+  }
+
   const q = normalizeQuery(query.toLowerCase());
+  const words = q.split(/\s+/).filter((w) => w.length > 2);
+
   const allEntries = [
-    ...kb.departments,
-    ...kb.doctors,
-    ...kb.specialties,
-    ...kb.diagnostics,
-    ...kb.services,
-    ...kb.processes,
-    ...kb.faqs,
+    ...base.departments,
+    ...base.doctors,
+    ...base.specialties,
+    ...base.diagnostics,
+    ...base.services,
+    ...base.processes,
+    ...base.faqs,
   ];
 
-  const matches = allEntries.filter(
-    (e) =>
-      e.title.toLowerCase().includes(q) ||
-      e.content.toLowerCase().includes(q) ||
-      e.tags.some((t) => t.includes(q) || q.includes(t) || q.split(/\s+/).some((w) => w.length > 2 && (t.includes(w) || e.title.toLowerCase().includes(w))))
-  );
+  const matches = allEntries.filter((e) => {
+    if (e.title.toLowerCase().includes(q)) return true;
+    if (e.content.toLowerCase().includes(q)) return true;
+    return (
+      e.tags.some((tag) => tagMatchesWord(tag, words)) ||
+      words.some((w) => w.length > 3 && e.title.toLowerCase().includes(w))
+    );
+  });
 
   const top = matches.slice(0, 3);
   if (top.length === 0) {
@@ -85,6 +105,84 @@ export function searchKnowledgeBase(query: string, kb: KnowledgeBase = DEFAULT_K
   }
 
   return top.map((e) => `[${e.title}]: ${e.content}`).join("\n\n");
+}
+
+function tagMatchesWord(tag: string, words: string[]): boolean {
+  const t = tag.toLowerCase();
+  if (words.includes(t)) return true;
+  // Short tags (ct, mri) must match whole words only — avoids "ct" inside "doctors"
+  if (t.length <= 3) return words.includes(t);
+  return words.some((w) => w.includes(t) || t.includes(w));
+}
+
+export function isDoctorListQuery(query: string): boolean {
+  return (
+    /\bdoctors?\b/i.test(query) &&
+    /\b(list|name|names|who|available|tell|show|give|out)\b/i.test(query)
+  );
+}
+
+/** List doctors for a department — used during appointment booking. */
+export function getDoctorsForDepartment(department: string, kb: KnowledgeBase = DEFAULT_KNOWLEDGE_BASE): string {
+  const deptLower = department.toLowerCase();
+  const doctors = kb.doctors.filter(
+    (d) =>
+      d.content.toLowerCase().includes(deptLower) ||
+      d.tags.some((tag) => deptLower.includes(tag) || tag.includes(deptLower.split(/\s+/)[0] ?? ""))
+  );
+
+  if (doctors.length === 0) {
+    return `Our ${department} team will assign a specialist when you book.`;
+  }
+
+  return doctors.map((d) => `[${d.title}]: ${d.content}`).join("\n\n");
+}
+
+function searchDoctorsInDepartment(
+  query: string,
+  kb: KnowledgeBase,
+  contextDepartment?: string
+): string | null {
+  if (!isDoctorListQuery(query) && !/(?:list|tell|give|show|who|available).{0,40}\bdoctors?\b/i.test(query)) {
+    return null;
+  }
+
+  let department = contextDepartment;
+  const matched = matchDepartment(query);
+  if (
+    matched.department !== query.trim() &&
+    !/^(list|tell|can|please|the|out|name|doctors?)/i.test(matched.department)
+  ) {
+    department = matched.department;
+  }
+
+  if (!department) return null;
+
+  const deptLower = department.toLowerCase();
+
+  const doctors = kb.doctors.filter(
+    (d) =>
+      d.content.toLowerCase().includes(deptLower) ||
+      d.tags.some(
+        (tag) => deptLower.includes(tag) || tag.includes(deptLower.split(/\s+/)[0] ?? "")
+      )
+  );
+
+  if (doctors.length > 0) {
+    return doctors.map((d) => `[${d.title}]: ${d.content}`).join("\n\n");
+  }
+
+  const deptEntry = kb.departments.find(
+    (d) =>
+      d.title.toLowerCase() === deptLower ||
+      d.tags.some((tag) => tagMatchesWord(tag, query.toLowerCase().split(/\s+/)))
+  );
+
+  if (deptEntry) {
+    return `[${deptEntry.title}]: ${deptEntry.content} Please book an appointment and our team will assign a specialist.`;
+  }
+
+  return null;
 }
 
 /** Map Thanglish / mixed queries to searchable English terms */

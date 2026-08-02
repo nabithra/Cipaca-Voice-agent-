@@ -239,8 +239,23 @@ export function startSpecialist(lang: Language): string {
 
 export function greeting(lang: Language): string {
   return say(
-    "Welcome to CIPACA Hospital, Thiruvannamalai Pilot Unit. I'm your AI receptionist. How may I help you today?",
-    "வணக்கம். CIPACA Hospital, Thiruvannamalai. நான் உங்களுக்கு உதவும் AI ரிசப்ஷனிஸ்ட். என்ன ஹெல்ப் வேண்டும்?",
+    "Welcome to CIPACA Hospital, Thiruvannamalai Unit. I'm your AI receptionist. How may I help you?",
+    "வணக்கம். CIPACA Hospital, Thiruvannamalai Unit. நான் உங்கள் AI ரிசப்ஷனிஸ்ட். என்ன ஹெல்ப் வேண்டும்?",
+    lang
+  );
+}
+
+const WELCOME_MARKER = /Welcome to CIPACA|CIPACA Hospital, Thiruvannamalai/i;
+
+export function isWelcomeMessage(text: string): boolean {
+  return WELCOME_MARKER.test(text);
+}
+
+/** Short follow-up when caller says hello after the welcome. */
+export function greetingFollowUp(lang: Language): string {
+  return say(
+    "Hello! How may I help you? I can help with appointments, emergencies, scans, or hospital information.",
+    "வணக்கம்! என்ன ஹெல்ப் வேண்டும்? அப்பாயின்ட்மெண்ட், எமர்ஜென்சி, ஸ்கேன், ஹாஸ்பிடல் தகவல் — எதற்கும் உதவுகிறேன்.",
     lang
   );
 }
@@ -318,6 +333,28 @@ export function formatKnowledgeAnswer(raw: string, lang: Language): string {
     return transliterateForTamilTts(`இந்த தகவல்: ${answer}. ${anythingElse("ta")}`);
   }
   return `${answer} ${anythingElse(lang)}`;
+}
+
+/** Short knowledge snippet without closing the conversation. */
+export function formatKnowledgeSnippet(raw: string, lang: Language): string {
+  const cleaned = raw
+    .replace(/\[([^\]]+)\]:\s*/g, "")
+    .split("\n\n")
+    .slice(0, 2)
+    .join(". ")
+    .trim();
+  if (lang === "ta") {
+    return transliterateForTamilTts(cleaned);
+  }
+  return cleaned;
+}
+
+export function resumeWorkflowPrompt(snippet: string, nextQuestion: string, lang: Language): string {
+  return say(
+    `${snippet} Now, ${nextQuestion}`,
+    `${snippet} இப்போ, ${nextQuestion}`,
+    lang
+  );
 }
 
 export function containsTamilScript(text: string): boolean {
