@@ -1,16 +1,12 @@
 import type { Language } from "@/types";
-import { transliterateForTamilTts } from "@/lib/tamil-phonetics";
 
-/** Pick response by selected language; Tamil uses phonetic script for loanwords. */
+/** Pick response by selected language; Tamil UI uses natural Tamil script (TTS transliteration is separate). */
 export function say(en: string, ta: string, lang: Language): string {
-  const raw =
-    lang === "ta"
-      ? transliterateForTamilTts(ta.trim())
-      : en.trim();
+  const raw = lang === "ta" ? ta.trim() : en.trim();
   return formatReply(raw, lang);
 }
 
-/** English = Latin only. Tamil = Tamil script with phonetic loanwords. */
+/** English = Latin only. Tamil = Tamil script for on-screen display. */
 export function formatReply(text: string, lang: Language): string {
   let s = text.replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
   if (lang === "en") {
@@ -38,7 +34,7 @@ export function prepareForSpeech(text: string): string {
 export function unknownFallback(lang: Language): string {
   return say(
     "I'm sorry. I don't have that information right now. Let me connect you with our hospital team.",
-    "மன்னிக்கவும். இந்த தகவல் என்னிடம் இல்லை. ஹாஸ்பிடல் டீம்-ஐ கனெக்ட் செய்கிறேன்.",
+    "மன்னிக்கவும். இந்த தகவல் என்னிடம் இல்லை. மருத்துவமனை குழுவை இணைக்கிறேன்.",
     lang
   );
 }
@@ -46,7 +42,7 @@ export function unknownFallback(lang: Language): string {
 export function anythingElse(lang: Language): string {
   return say(
     "Is there anything else I can help you with?",
-    "வேறு ஏதாவது ஹெல்ப் வேண்டுமா?",
+    "வேறு ஏதாவது உதவி வேண்டுமா?",
     lang
   );
 }
@@ -62,7 +58,7 @@ export function goodbye(lang: Language): string {
 export function sessionEnded(lang: Language): string {
   return say(
     "This session has ended. Please press Restart if you need more help.",
-    "செஷன் முடிந்துவிட்டது. மீண்டும் ஹெல்ப் வேண்டுமென்றால் ரீஸ்டார்ட் அழுத்துங்கள்.",
+    "செயல்பாடு முடிந்துவிட்டது. மீண்டும் உதவி வேண்டுமென்றால் மறுதொடக்கம் அழுத்துங்கள்.",
     lang
   );
 }
@@ -70,7 +66,7 @@ export function sessionEnded(lang: Language): string {
 export function clarifyIntent(lang: Language): string {
   return say(
     "I can help with appointments, emergencies, scans, or hospital information. What do you need?",
-    "அப்பாயின்ட்மெண்ட், எமர்ஜென்சி, ஸ்கேன், ஹாஸ்பிடல் தகவல் — எதற்கு ஹெல்ப் வேண்டும்?",
+    "மருத்துஆலோசனை, அவசரச்சிகிச்சை, பரிசோதனை, மருத்துவமனை தகவல் — எதற்கு உதவி வேண்டும்?",
     lang
   );
 }
@@ -78,7 +74,7 @@ export function clarifyIntent(lang: Language): string {
 export function moreHelp(lang: Language): string {
   return say(
     "Of course. What else can I help you with?",
-    "சரி. வேறு எதற்கு ஹெல்ப் வேண்டும்?",
+    "சரி. வேறு எதற்கு உதவி வேண்டும்?",
     lang
   );
 }
@@ -95,8 +91,8 @@ export function askPhone(lang: Language, name?: string): string {
   return say(
     name ? `Thank you, ${name}. May I have your mobile number?` : "May I have your mobile number?",
     name
-      ? `நன்றி, ${tamilName(name)}. உங்கள் மொபைல் நம்பர் சொல்லுங்கள்.`
-      : "உங்கள் மொபைல் நம்பர் சொல்லுங்கள்.",
+      ? `நன்றி, ${tamilName(name)}. உங்கள் மொபைல் எண் சொல்லுங்கள்.`
+      : "உங்கள் மொபைல் எண் சொல்லுங்கள்.",
     lang
   );
 }
@@ -104,7 +100,7 @@ export function askPhone(lang: Language, name?: string): string {
 export function askDepartment(lang: Language): string {
   return say(
     "Which department would you like to visit?",
-    "எந்த டிப்பார்ட்மெண்ட்-க்கு வர வேண்டும்?",
+    "எந்த துறைக்கு வர வேண்டும்?",
     lang
   );
 }
@@ -112,7 +108,7 @@ export function askDepartment(lang: Language): string {
 export function askDoctor(lang: Language): string {
   return say(
     "Do you have a preferred doctor?",
-    "எந்த டாக்டர்-ஐ பார்க்க வேண்டும்?",
+    "எந்த மருத்துவரை பார்க்க வேண்டும்?",
     lang
   );
 }
@@ -120,7 +116,7 @@ export function askDoctor(lang: Language): string {
 export function askDate(lang: Language): string {
   return say(
     "What date would you prefer?",
-    "எந்த டேட் வசதியாக இருக்கும்?",
+    "எந்த தேதி வசதியாக இருக்கும்?",
     lang
   );
 }
@@ -128,7 +124,7 @@ export function askDate(lang: Language): string {
 export function askTime(lang: Language): string {
   return say(
     "What time would you prefer?",
-    "எந்த டைம் வசதியாக இருக்கும்?",
+    "எந்த நேரம் வசதியாக இருக்கும்?",
     lang
   );
 }
@@ -144,7 +140,7 @@ export function askLocation(lang: Language): string {
 export function askEmergencyType(lang: Language): string {
   return say(
     "What kind of emergency is it?",
-    "என்ன எமர்ஜென்சி? ஆக்சிடென்ட், செஸ்ட் பேன், ஸ்ட்ரோக் — ஏதாவது சொல்லுங்கள்.",
+    "என்ன அவசரம்? விபத்து, மார்பு வலி, பக்கவாதம் — ஏதாவது சொல்லுங்கள்.",
     lang
   );
 }
@@ -152,7 +148,7 @@ export function askEmergencyType(lang: Language): string {
 export function askPatientCondition(lang: Language): string {
   return say(
     "How is the patient doing right now?",
-    "நோயாளியின் கண்டிஷன் எப்படி இருக்கிறது?",
+    "நோயாளியின் நிலை எப்படி இருக்கிறது?",
     lang
   );
 }
@@ -160,7 +156,7 @@ export function askPatientCondition(lang: Language): string {
 export function askTravelling(lang: Language): string {
   return say(
     "Are you on the way to the hospital?",
-    "நீங்கள் ஹாஸ்பிடல்-க்கு வந்துகொண்டிருக்கிறீர்களா?",
+    "நீங்கள் மருத்துவமனைக்கு வந்துகொண்டிருக்கிறீர்களா?",
     lang
   );
 }
@@ -168,7 +164,7 @@ export function askTravelling(lang: Language): string {
 export function askTestType(lang: Language): string {
   return say(
     "Which test do you need?",
-    "எந்த ஸ்கேன் அல்லது டெஸ்ட்? MRI, CT, அல்ட்ராசவுண்ட், எக்ஸ்-ரே, ப்ளட் டெஸ்ட், ECG?",
+    "எந்த பரிசோதனை வேண்டும்? MRI, CT, அல்ட்ராசவுண்ட், எக்ஸ்-ரே, இரத்த பரிசோதனை, ECG?",
     lang
   );
 }
@@ -176,7 +172,7 @@ export function askTestType(lang: Language): string {
 export function askHospitalUnit(lang: Language, unit: string): string {
   return say(
     `Which hospital unit? Our pilot unit is ${unit}.`,
-    `எந்த ஹாஸ்பிடல் யூனிட்? எங்கள் பைலட் யூனிட்: ${unit}.`,
+    `எந்த மருத்துவமனை பிரிவு? எங்கள் முயற்சி பிரிவு: ${unit}.`,
     lang
   );
 }
@@ -184,7 +180,7 @@ export function askHospitalUnit(lang: Language, unit: string): string {
 export function askAdmissionReason(lang: Language): string {
   return say(
     "What is the reason for admission?",
-    "அட்மிஷன்-க்கான ரீசன் என்ன?",
+    "அனுமதிக்கான காரணம் என்ன?",
     lang
   );
 }
@@ -200,7 +196,7 @@ export function confirmDepartment(lang: Language, dept: string): string {
 export function startAppointment(lang: Language): string {
   return say(
     "Certainly. I'll help you book an appointment. May I know your name?",
-    "சரி. அப்பாயின்ட்மெண்ட் புக் செய்ய உதவுகிறேன். தயவு செய்து உங்கள் பெயர் சொல்லுங்கள்.",
+    "சரி. மருத்துஆலோசனை பதிவு செய்ய உதவுகிறேன். தயவு செய்து உங்கள் பெயர் சொல்லுங்கள்.",
     lang
   );
 }
@@ -216,7 +212,7 @@ export function startEmergency(lang: Language): string {
 export function startDiagnostic(lang: Language): string {
   return say(
     "Certainly. I'll help with your scan booking. May I know the patient name?",
-    "சரி. ஸ்கேன் புக்கிங்-க்கு உதவுகிறேன். நோயாளியின் பெயர் சொல்லுங்கள்.",
+    "சரி. பரிசோதனை பதிவுக்கு உதவுகிறேன். நோயாளியின் பெயர் சொல்லுங்கள்.",
     lang
   );
 }
@@ -224,7 +220,7 @@ export function startDiagnostic(lang: Language): string {
 export function startAdmission(lang: Language): string {
   return say(
     "I'll help with your admission enquiry. May I know your name?",
-    "அட்மிஷன் என்குயிரி-க்கு உதவுகிறேன். தயவு செய்து உங்கள் பெயர் சொல்லுங்கள்.",
+    "அனுமதி விசாரணைக்கு உதவுகிறேன். தயவு செய்து உங்கள் பெயர் சொல்லுங்கள்.",
     lang
   );
 }
@@ -232,7 +228,7 @@ export function startAdmission(lang: Language): string {
 export function startSpecialist(lang: Language): string {
   return say(
     "Certainly. I'll arrange a specialist consultation. May I know your name?",
-    "சரி. ஸ்பெஷலிஸ்ட் கன்சுல்டேஷன் அரேஞ்ச் செய்கிறேன். உங்கள் பெயர் சொல்லுங்கள்.",
+    "சரி. சிறப்பு மருத்துவ ஆலோசனை ஏற்பாடு செய்கிறேன். உங்கள் பெயர் சொல்லுங்கள்.",
     lang
   );
 }
@@ -240,7 +236,7 @@ export function startSpecialist(lang: Language): string {
 export function greeting(lang: Language): string {
   return say(
     "Welcome to CIPACA Hospital, Thiruvannamalai Unit. I'm your AI receptionist. How may I help you?",
-    "வணக்கம். CIPACA Hospital, Thiruvannamalai Unit. நான் உங்கள் AI ரிசப்ஷனிஸ்ட். என்ன ஹெல்ப் வேண்டும்?",
+    "வணக்கம். CIPACA மருத்துவமனை, \u0ba4\u0bbf\u0bb0\u0bc1\u0bb5\u0ba9\u0bcd\u0ba9\u0bae\u0bb2\u0bc8 \u0baa\u0bbf\u0bb0\u0bbf\u0bb5\u0bc1. \u0ba8\u0bbe\u0ba9\u0bcd \u0b89\u0b99\u0bcd\u0b95\u0bb3\u0bcd AI \u0bb5\u0bb0\u0bb5\u0bc7\u0bb1\u0bcd\u0baa\u0bbe\u0bb3\u0bb0\u0bcd. \u0b8e\u0ba9\u0bcd\u0ba9 \u0b89\u0ba4\u0bb5\u0bbf \u0bb5\u0bc7\u0ba3\u0bcd\u0b9f\u0bc1\u0bae\u0bcd?",
     lang
   );
 }
@@ -249,7 +245,7 @@ export function greeting(lang: Language): string {
 export function greetingFollowUp(lang: Language): string {
   return say(
     "Hello! How may I help you? I can help with appointments, emergencies, scans, or hospital information.",
-    "வணக்கம்! என்ன ஹெல்ப் வேண்டும்? அப்பாயின்ட்மெண்ட், எமர்ஜென்சி, ஸ்கேன், ஹாஸ்பிடல் தகவல் — எதற்கும் உதவுகிறேன்.",
+    "வணக்கம்! என்ன உதவி வேண்டும்? மருத்துஆலோசனை, அவசரம், பரிசோதனை, மருத்துவமனை தகவல் — எதற்கும் உதவுகிறேன்.",
     lang
   );
 }
@@ -257,7 +253,7 @@ export function greetingFollowUp(lang: Language): string {
 export function appointmentComplete(lang: Language, refId: string): string {
   return say(
     `Your appointment is recorded. Reference ID: ${refId}. Our team will call you shortly to confirm. ${anythingElse(lang)}`,
-    `அப்பாயின்ட்மெண்ட் பதிவு செய்யப்பட்டது. ரெஃபரன்ஸ் ஐடி: ${refId}. எங்கள் டீம் விரைவில் கன்ஃபர்ம செய்ய கால் செய்வார்கள். ${anythingElse(lang)}`,
+    `மருத்துஆலோசனை பதிவு செய்யப்பட்டது. குறிப்பு எண்: ${refId}. எங்கள் குழு விரைவில் உறுதிப்படுத்த அழைப்பார்கள். ${anythingElse(lang)}`,
     lang
   );
 }
@@ -271,7 +267,7 @@ export function emergencyComplete(
   const travelNote = travelling
     ? say(
         "Hospital, medical team, and admission have been notified.",
-        "ஹாஸ்பிடல், மெடிக்கல் டீம், அட்மிஷன்-க்கு தெரிவித்துவிட்டேன்.",
+        "மருத்துவமனை, மருத்துவக் குழு, அனுமதி பிரிவுக்கு தெரிவித்துவிட்டேன்.",
         lang
       )
     : "";
@@ -280,7 +276,7 @@ export function emergencyComplete(
       /\s+/g,
       " "
     ),
-    `எமர்ஜென்சி டிக்கெட் ${ticketId} கிரியேட் ஆகியுள்ளது. பிரயாரிட்டி ஹை. GRE மற்றும் ${unit}-க்கு தெரிவித்துவிட்டேன். ${travelNote} ${anythingElse(lang)}`.replace(
+    `அவசர டிக்கெட் ${ticketId} உருவாக்கப்பட்டது. முன்னுரிமை உயர்ந்தது. GRE மற்றும் ${unit}-க்கு தெரிவித்துவிட்டேன். ${travelNote} ${anythingElse(lang)}`.replace(
       /\s+/g,
       " "
     ),
@@ -291,7 +287,7 @@ export function emergencyComplete(
 export function diagnosticComplete(lang: Language, refId: string, test: string, date: string): string {
   return say(
     `Booking recorded. Reference ID ${refId}. Our team will confirm your ${test} on ${date}. ${anythingElse(lang)}`,
-    `புக்கிங் பதிவு செய்யப்பட்டது. ரெஃபரன்ஸ் ஐடி ${refId}. ${date}-க்கு ${test} கன்ஃபர்ம செய்ய டீம் கால் செய்வார்கள். ${anythingElse(lang)}`,
+    `பதிவு செய்யப்பட்டது. குறிப்பு எண் ${refId}. ${date}-க்கு ${test} உறுதிப்படுத்த எங்கள் குழு அழைப்பார்கள். ${anythingElse(lang)}`,
     lang
   );
 }
@@ -299,7 +295,7 @@ export function diagnosticComplete(lang: Language, refId: string, test: string, 
 export function admissionComplete(lang: Language, refId: string): string {
   return say(
     `Admission enquiry recorded. Reference ID ${refId}. Our team will contact you shortly. ${anythingElse(lang)}`,
-    `அட்மிஷன் என்குயிரி பதிவு செய்யப்பட்டது. ரெஃபரன்ஸ் ஐடி ${refId}. டீம் விரைவில் தொடர்பு கொள்வார்கள். ${anythingElse(lang)}`,
+    `அனுமதி விசாரணை பதிவு செய்யப்பட்டது. குறிப்பு எண் ${refId}. குழு விரைவில் தொடர்பு கொள்வார்கள். ${anythingElse(lang)}`,
     lang
   );
 }
@@ -307,7 +303,7 @@ export function admissionComplete(lang: Language, refId: string): string {
 export function escalationMessage(lang: Language, greName: string): string {
   return say(
     `Connecting you to our GRE executive ${greName}. Please hold.`,
-    `GRE எக்ஸிக்யூட்டிவ் ${greName}-ஐ கனெக்ட் செய்கிறேன். தயவு செய்து ஹோல்ட்-ல் இருங்கள்.`,
+    `GRE அதிகாரி ${greName}-ஐ இணைக்கிறேன். தயவு செய்து காத்திருங்கள்.`,
     lang
   );
 }
@@ -324,7 +320,7 @@ export function formatKnowledgeAnswer(raw: string, lang: Language): string {
     .trim();
   const answer = firstTwo || cleaned;
   if (lang === "ta") {
-    return transliterateForTamilTts(`இந்த தகவல்: ${answer}. ${anythingElse("ta")}`);
+    return `இந்த தகவல்: ${answer}. ${anythingElse("ta")}`;
   }
   return `${answer} ${anythingElse(lang)}`;
 }
@@ -338,7 +334,7 @@ export function formatKnowledgeSnippet(raw: string, lang: Language): string {
     .join(". ")
     .trim();
   if (lang === "ta") {
-    return transliterateForTamilTts(cleaned);
+    return cleaned;
   }
   return cleaned;
 }
